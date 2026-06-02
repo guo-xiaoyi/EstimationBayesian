@@ -1,0 +1,14 @@
+[project]
+name = "estimation-bayesian"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pymc>=5.0",
+    "arviz>=0.18",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "pytensor>=2.18",
+    "openpyxl>=3.1",
+]
