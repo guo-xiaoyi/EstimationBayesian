@@ -1,0 +1,673 @@
+\documentclass[12pt, a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{setspace}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\geometry{top=1in, bottom=1in, left=1.25in, right=1.25in}
+\onehalfspacing
+
+% ── Convenience macros ────────────────────────────────────────────────────────
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Normal}{\mathcal{N}}
+\newcommand{\HN}{\mathrm{HN}}
+\newcommand{\IG}{\mathrm{IG}}
+\newcommand{\Dir}{\mathrm{Dirichlet}}
+\newcommand{\logsumexp}{\operatorname{log\text{-}sum\text{-}exp}}
+\newcommand{\btheta}{\bm{\theta}}
+\newcommand{\bpi}{\bm{\pi}}
+\newcommand{\bmu}{\bm{\mu}}
+\newcommand{\bsigma}{\bm{\sigma}}
+\newcommand{\ba}{\mathbf{a}}
+\newcommand{\bz}{\mathbf{z}}
+\newcommand{\ksi}{\kappa}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{\textbf{Statistical Approaches}\\[4pt]
+       \large Bayesian Hierarchical Finite-Mixture Estimation of\\
+       Cumulative Prospect Theory Parameters}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Overview}
+% ══════════════════════════════════════════════════════════════════════════════
+
+We estimate the parameters of Cumulative Prospect Theory (CPT) from individual
+certainty-equivalent (CE) responses to a battery of multi-period lotteries.
+To accommodate the empirically documented heterogeneity in risk preferences, we
+embed CPT within a \emph{Bayesian hierarchical finite-mixture model}: the
+population is assumed to consist of $C$ latent preference types (clusters), each
+characterised by its own CPT parameter vector.  Inference is performed via
+Sequential Monte Carlo (SMC), which is gradient-free and well-suited to the
+multimodal posteriors that arise in mixture settings.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{The Measurement Framework: Cumulative Prospect Theory}
+\label{sec:cpt}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Utility and Temporal Discounting}
+
+Outcomes are payoff \emph{streams} $\mathbf{o} = (o_0, o_1, \ldots, o_T)$
+received at periods $0, 1, \ldots, T$.  Future payoffs are discounted
+exponentially:
+\begin{equation}
+  \rho(t;\, r) = e^{-r\,t}, \qquad r > 0,
+  \label{eq:discount}
+\end{equation}
+yielding the \emph{discounted aggregate}
+$\tilde{x}(\mathbf{o}; r) = \sum_{t=0}^{T} \rho(t;\,r)\,o_t$.
+
+The value of a discounted aggregate relative to a reference point $R$ is given
+by a power utility function with loss aversion:
+\begin{equation}
+  u(x;\, \alpha,\, \lambda,\, R) =
+  \begin{cases}
+    (x - R)^{\alpha}        & \text{if } x \geq R, \\[4pt]
+    -\lambda\,(R - x)^{\alpha} & \text{if } x < R,
+  \end{cases}
+  \label{eq:utility}
+\end{equation}
+where $\alpha \in (0, \infty)$ is the curvature of the utility function and
+$\lambda > 1$ captures loss aversion.  The \emph{present value} of an outcome
+stream is therefore
+\begin{equation}
+  \mathrm{PV}(\mathbf{o};\, r,\, R,\, \alpha,\, \lambda)
+  = u\!\left(\tilde{x}(\mathbf{o};\,r);\; \alpha,\, \lambda,\, R\right).
+  \label{eq:pv}
+\end{equation}
+The inverse of $u$ is used to convert CPT values back to the monetary scale:
+\begin{equation}
+  u^{-1}(y;\, \alpha,\, \lambda,\, R) =
+  \begin{cases}
+    y^{1/\alpha} + R        & \text{if } y \geq 0, \\[4pt]
+    -\!\left(-y/\lambda\right)^{1/\alpha} + R & \text{if } y < 0.
+  \end{cases}
+  \label{eq:utility_inv}
+\end{equation}
+
+\subsection{Reference Point Formation}
+\label{sec:reference}
+
+A key extension of standard CPT is a \emph{composite, endogenous reference
+point} that the decision maker updates as the multi-period lottery unfolds.
+Four canonical reference-point types are combined:
+
+\begin{enumerate}[label=\arabic*.]
+  \item \textbf{Status Quo} ($R^{\mathrm{SQ}}$): anchored at the cumulative
+  payoff realised before the current session,
+  $R^{\mathrm{SQ}}(t) = Z_0$.
+
+  \item \textbf{Partial Adaptation} ($R^{\mathrm{A}}$): a geometrically
+  weighted average of the payoffs already received,
+  \begin{align}
+    R^{\mathrm{A}}(t) &= \frac{\sum_{i=0}^{t} \delta^{t-i}\,Z_i}
+                               {\sum_{i=0}^{t} \delta^{t-i}},
+  \end{align}
+  where $\delta \in (0,1]$ is a recency weight and $Z_i$ is the payoff
+  realised at period $i$.  In practice,
+  \begin{align}
+    R^{\mathrm{A}}(1) &= \frac{Z_1}{\delta + 1}, &
+    R^{\mathrm{A}}(2) &= \frac{\delta Z_1 + Z_2}{\delta^2 + \delta + 1}.
+  \end{align}
+
+  \item \textbf{Lagged Expectation} ($R^{\mathrm{LE}}$): a geometrically
+  weighted average of \emph{past} expected values,
+  \begin{align}
+    R^{\mathrm{LE}}(0) &= Z_0, &
+    R^{\mathrm{LE}}(1) &= \E[L_0], &
+    R^{\mathrm{LE}}(2) &= \frac{\delta\,\E[L_1] + \E[L_0]}{\delta + 1},
+  \end{align}
+  where $\E[L_t]$ denotes the expected payoff of the sub-lottery remaining at
+  session $t$.
+
+  \item \textbf{Forward Expectation} ($R^{\mathrm{FE}}$):
+  $R^{\mathrm{FE}}(t) = \E[L_t]$, the expectation of the current
+  sub-lottery (fully forward-looking).
+\end{enumerate}
+
+The \emph{composite reference point} is a convex combination of the four types,
+governed by weights $(a_1, a_2, a_3, a_4)$ that lie on the 3-simplex
+($a_j \geq 0$, $\sum_j a_j = 1$):
+\begin{equation}
+  R(t) = a_1\,R^{\mathrm{SQ}}(t) + a_2\,R^{\mathrm{A}}(t)
+        + a_3\,R^{\mathrm{LE}}(t) + a_4\,R^{\mathrm{FE}}(t),
+  \qquad a_4 = 1 - a_1 - a_2 - a_3.
+  \label{eq:composite_R}
+\end{equation}
+
+\subsection{Probability Weighting}
+\label{sec:pw}
+
+Two probability weighting functions are supported.
+
+\paragraph{Tversky--Kahneman (TK, 1992).}
+\begin{equation}
+  w^{\pm}(p;\, \gamma) = \frac{p^{\gamma}}{\bigl[p^{\gamma} + (1-p)^{\gamma}\bigr]^{1/\gamma}},
+  \qquad \gamma \in (0, 1],
+  \label{eq:pw_tk}
+\end{equation}
+where the same functional form is applied to gains ($+$) and losses ($-$).
+
+\paragraph{Prelec (1998), single-parameter.}
+\begin{equation}
+  w(p;\, \beta,\, \alpha_p) = \exp\!\bigl(-\beta\,(-\ln p)^{\alpha_p}\bigr),
+  \qquad \alpha_p \in (0, 1],\; \beta = 1 \text{ (fixed)}.
+  \label{eq:pw_prelec}
+\end{equation}
+
+\subsection{CPT Decision Weights and Valuation}
+\label{sec:cpt_value}
+
+Let a lottery $L$ have outcome streams $\mathbf{o}_1, \ldots, \mathbf{o}_n$
+with physical probabilities $p_1, \ldots, p_n$.  Rank the present values
+$v_j = \mathrm{PV}(\mathbf{o}_j)$ in decreasing order so that
+$v_{(1)} \geq \cdots \geq v_{(m)} \geq 0 > v_{(m+1)} \geq \cdots \geq v_{(n)}$.
+The CPT decision weight for outcome $j$ is
+\begin{equation}
+  \pi_j =
+  \begin{cases}
+    w^+\!\left(\displaystyle\sum_{i\leq j} p_{(i)}\right)
+    - w^+\!\left(\displaystyle\sum_{i< j}  p_{(i)}\right) & \text{(gains)}, \\[10pt]
+    w^-\!\left(\displaystyle\sum_{i\geq j} p_{(i)}\right)
+    - w^-\!\left(\displaystyle\sum_{i > j} p_{(i)}\right) & \text{(losses)}.
+  \end{cases}
+  \label{eq:dw}
+\end{equation}
+The CPT value of the lottery is
+\begin{equation}
+  V(L) = \sum_{j=1}^{n} \pi_j\, v_{(j)}.
+  \label{eq:cpt_value}
+\end{equation}
+
+\subsection{Theoretical Certainty Equivalent}
+\label{sec:ce}
+
+For each observation $\ell$ pertaining to lottery $L_\ell$ elicited at session
+$t_\ell$, the \emph{theoretical certainty equivalent} is
+\begin{equation}
+  \mathrm{CE}^{\mathrm{th}}(\btheta;\, \ell)
+  = u^{-1}\!\bigl(V(L_\ell;\, R_\ell,\, \btheta);\; \alpha,\, \lambda,\, R_\ell\bigr)
+  - Z_{t_\ell},
+  \label{eq:ce_th}
+\end{equation}
+where $R_\ell = R(t_\ell)$ is the composite reference point evaluated at
+session $t_\ell$ and $Z_{t_\ell}$ is the cumulative realised payoff up to that
+session.  The full CPT parameter vector for a cluster is
+\begin{equation}
+  \btheta = (r,\, \alpha,\, \lambda,\, \gamma\text{ or }\alpha_p,\,
+             a_1,\, a_2,\, a_3,\, \delta) \in \R^8.
+  \label{eq:param_vec}
+\end{equation}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Bayesian Hierarchical Finite-Mixture Model}
+\label{sec:model}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Mixture Structure}
+\label{sec:mixture}
+
+We posit $C$ latent preference types.  Each subject $i \in \{1,\ldots,N\}$ is
+drawn from one of the $C$ clusters, but cluster membership is \emph{latent} and
+treated as a nuisance variable that is integrated out analytically (soft
+assignment).  The cluster parameter matrices are
+$\btheta_k \in \R^8$ for $k = 1, \ldots, C$, and the mixing weights
+$\bpi = (\pi_1, \ldots, \pi_C)$ satisfy $\pi_k \geq 0$, $\sum_k \pi_k = 1$.
+
+\subsection{Prior Distributions}
+\label{sec:priors}
+
+\subsubsection{Mixing Weights}
+
+A symmetric Dirichlet prior is placed on the mixing weights:
+\begin{equation}
+  \bpi \sim \Dir\!\left(\alpha_0 \cdot \mathbf{1}_C\right),
+  \qquad \alpha_0 = 1.
+  \label{eq:prior_pi}
+\end{equation}
+With $\alpha_0 = 1$ this reduces to the uniform distribution on the
+$(C-1)$-simplex, encoding no prior preference for any particular partition of
+the population.
+
+\subsubsection{Hyperprior on Structural Parameters (Normal-Inverse-Gamma)}
+
+The five structural CPT parameters
+$(r,\, \alpha,\, \lambda,\, \gamma\text{ or }\alpha_p,\, \delta)$
+are assigned a hierarchical truncated LogNormal prior.  A Normal-Inverse-Gamma
+(NIG) hierarchical prior governs the population-level log mean $\mu_G$ and
+log-scale variance $\sigma_G^2$:
+\begin{align}
+  \sigma_{G,j}^2 &\sim \IG\!\left(\alpha_{\mathrm{IG}},\; \beta_{\mathrm{IG}}\right),
+                  \qquad j = 1, \ldots, 5,
+  \label{eq:prior_sigma_G}\\
+  \mu_{G,j} \mid \sigma_{G,j}
+                 &\sim \Normal\!\left(\mu_{0,j},\; \sigma_{G,j}\right),
+  \label{eq:prior_mu_G}
+\end{align}
+with shape $\alpha_{\mathrm{IG}} = 3$ and scale $\beta_{\mathrm{IG}} = 2$, so
+that the prior expectation is $\E[\sigma_{G,j}^2] = \beta/(\alpha-1) = 1$,
+allowing cluster parameters to disperse over the full admissible range.
+
+The benchmark values are anchored at theoretically neutral points on the
+log scale:
+\begin{equation}
+  \mu_{0,j} =
+  \begin{cases}
+    0 = \ln 1 & \text{for } \alpha,\, \lambda,\, \gamma/\alpha_p,\, \delta
+                 \quad\text{(no curvature / no distortion / no loss aversion)}, \\[4pt]
+    \tfrac{1}{2}\!\left[\ln(\underline{r}) + \ln(\overline{r})\right]
+               & \text{for } r \quad\text{(log-geometric midpoint of the admissible range)}.
+  \end{cases}
+  \label{eq:mu0}
+\end{equation}
+
+\subsubsection{Cluster-Level Structural Parameters}
+
+Each cluster's five structural parameters inherit their log-location and
+log-scale from the NIG hyperprior and are truncated to the method-specific
+admissible bounds:
+\begin{align}
+  \theta_{\mathrm{rest},k,j} \mid \mu_{G,j}, \sigma_{G,j}
+    &\sim \LogNormal(\mu_{G,j}, \sigma_{G,j})
+       \; \mathbb{I}\!\left[
+       \underline{\theta}_j \leq \theta_{\mathrm{rest},k,j}
+       \leq \overline{\theta}_j
+       \right],
+  \quad k = 1, \ldots, C,\; j = 1, \ldots, 5.
+  \label{eq:prior_theta_rest}
+\end{align}
+where $[\underline{\theta}_j, \overline{\theta}_j]$ are the method-specific
+admissible bounds listed in Table~\ref{tab:bounds}.
+
+\begin{table}[h!]
+  \centering
+  \caption{Admissible parameter bounds.}
+  \label{tab:bounds}
+  \begin{tabular}{lcc}
+    \toprule
+    Parameter & TK (1992) & Prelec (1998) \\
+    \midrule
+    $r$           & $(10^{-6},\; 0.01)$  & $(10^{-6},\; 0.1)$ \\
+    $\alpha$      & $(0.5,\; 1.5)$       & $(0.5,\; 1.5)$     \\
+    $\lambda$     & $(0.99,\; 3.0)$      & $(0.99,\; 3.5)$    \\
+    $\gamma$ / $\alpha_p$
+                  & $(0.2,\; 1.0)$       & $(0.4,\; 1.0)$     \\
+    $\delta$      & $(0.2,\; 1.0)$       & $(0.0,\; 1.0)$     \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Reference-Point Weights (Cluster-Specific Dirichlet Parameterisation)}
+
+The reference-point weight vector $\ba_k = (a_{k1}, a_{k2}, a_{k3}, a_{k4})$
+must lie on the 3-simplex.  We place a symmetric Dirichlet prior on each
+cluster's reference-point weights:
+\begin{equation}
+  \ba_k \sim \Dir\!\left(\alpha_R \cdot \mathbf{1}_4\right),
+  \qquad \alpha_R = 1,
+  \label{eq:prior_a}
+\end{equation}
+so the four canonical reference-point components are treated symmetrically
+within each preference cluster.  The forward-looking component $a_{k4}$ is stored
+explicitly in the simplex vector, while the assembled CPT vector uses
+$(a_{k1}, a_{k2}, a_{k3})$ and leaves $a_{k4}$ as the residual component.
+
+\subsubsection{Individual Noise Scale}
+
+Each subject $i$ has a noise multiplier $\ksi_i$ that scales the observation
+standard deviation proportionally to the payoff spread of each lottery.  The
+current baseline treats this scale as a nuisance quantity and marginalises it
+analytically, rather than sampling one $\ksi_i$ per subject.
+
+\paragraph{Marginalised noise (baseline).}
+Let $v_i = \ksi_i^2$ denote the subject-level noise variance multiplier.  We
+place an inverse-gamma prior on $v_i$,
+\begin{equation}
+  v_i \sim \IG(a_\ksi, b_\ksi),
+  \qquad a_\ksi = 3,\qquad
+  b_\ksi = (a_\ksi - 1)\ksi_{\mathrm{fixed}}^2 = 0.18,
+  \label{eq:prior_ksi_ig}
+\end{equation}
+so that $\E[v_i] = b_\ksi/(a_\ksi-1) = 0.09$, corresponding to the benchmark
+noise multiplier $\ksi_{\mathrm{fixed}} = 0.3$.  The variable $v_i$ is then
+integrated out of the likelihood.  This preserves uncertainty about the
+subject-level measurement scale while avoiding an additional latent noise
+parameter for every subject.
+
+Two alternative settings are retained for sensitivity checks:
+
+\paragraph{Estimated noise (hierarchical).}
+\begin{align}
+  \mu_\ksi  &\sim \HN(\sigma_\ksi^0), \qquad \sigma_\ksi^0 = 0.3,
+  \label{eq:prior_mu_ksi}\\
+  \ksi_i^{\mathrm{raw}} &\sim \HN(1),
+  \label{eq:prior_ksi_raw}\\
+  \ksi_i    &= \mu_\ksi \cdot \ksi_i^{\mathrm{raw}}.
+  \label{eq:ksi_noncentered}
+\end{align}
+This is a \emph{non-centred} parameterisation: sampling $\ksi_i^{\mathrm{raw}}$
+on a standard scale and multiplying by $\mu_\ksi$ afterwards avoids the
+funnel-shaped geometry that arises in the centred form.
+
+\paragraph{Fixed noise.}
+Alternatively, $\ksi_i = \ksi_{\mathrm{fixed}}$ for all $i$, with
+$\ksi_{\mathrm{fixed}} = 0.3$ as the fixed-mode benchmark value.
+
+\subsection{Likelihood}
+\label{sec:likelihood}
+
+Let $\mathcal{O}_i = \{\ell : \text{observation } \ell \text{ belongs to subject }i\}$
+denote the set of CE observations for subject $i$, and let
+$\mathrm{spread}_\ell = |\max_\ell - \min_\ell|$ be the payoff range of lottery $\ell$.
+Conditional on cluster $k$ and on the subject-level noise variance multiplier
+$v_i = \ksi_i^2$, the observation model is
+\begin{equation}
+  \mathrm{CE}^{\mathrm{obs}}_\ell \mid z_i=k, v_i
+  \sim \Normal\!\bigl(\mathrm{CE}^{\mathrm{th}}(\btheta_k;\,\ell),\;
+                      \sqrt{v_i} \cdot \mathrm{spread}_\ell\bigr),
+  \label{eq:obs_model}
+\end{equation}
+so the noise standard deviation grows with the stake size of the lottery.
+
+For the marginalised-noise specification, define the spread-normalised residual
+and residual sum of squares under cluster $k$ as
+\begin{equation}
+  e_{ik\ell}
+  =
+  \frac{\mathrm{CE}^{\mathrm{obs}}_\ell
+        - \mathrm{CE}^{\mathrm{th}}(\btheta_k;\,\ell)}
+       {\mathrm{spread}_\ell},
+  \qquad
+  Q_{ik} = \sum_{\ell \in \mathcal{O}_i} e_{ik\ell}^2,
+  \qquad
+  n_i = |\mathcal{O}_i|.
+  \label{eq:scaled_residuals}
+\end{equation}
+Integrating out $v_i \sim \IG(a_\ksi,b_\ksi)$ yields the subject--cluster
+marginal likelihood
+\begin{equation}
+  m_{ik}(\btheta_k)
+  =
+  \left(\prod_{\ell \in \mathcal{O}_i}
+        \frac{1}{\mathrm{spread}_\ell}\right)
+  (2\pi)^{-n_i/2}
+  \frac{b_\ksi^{a_\ksi}}{\Gamma(a_\ksi)}
+  \Gamma\!\left(a_\ksi + \frac{n_i}{2}\right)
+  \left(b_\ksi + \frac{Q_{ik}}{2}\right)^{-\left(a_\ksi+n_i/2\right)}.
+  \label{eq:ksi_marginal_lik}
+\end{equation}
+The log-likelihood contribution of subject $i$, after marginalising over both
+the noise scale and the latent cluster assignment, is therefore
+\begin{equation}
+  \log p_i(\btheta_{1:C},\, \bpi)
+  =
+  \logsumexp_k\!\left[
+    \log \pi_k + \log m_{ik}(\btheta_k)
+  \right],
+  \label{eq:loglik_marginal_ksi}
+\end{equation}
+and the total log-likelihood is $\log p = \sum_{i=1}^{N} \log p_i$.
+
+For the estimated-noise or fixed-noise alternatives, the same mixture
+likelihood is evaluated conditionally on $\ksi_i$:
+\begin{equation}
+  \log p_i(\btheta_{1:C},\, \bpi,\, \ksi_i)
+  =
+  \logsumexp_{k}\!\left[
+      \log \pi_k
+    + \sum_{\ell \in \mathcal{O}_i}
+        \log \Normal\!\bigl(\mathrm{CE}^{\mathrm{obs}}_\ell;\;
+             \mathrm{CE}^{\mathrm{th}}(\btheta_k;\,\ell),\;
+             \ksi_i \cdot \mathrm{spread}_\ell\bigr)
+  \right].
+  \label{eq:loglik_subj}
+\end{equation}
+Equations~\eqref{eq:loglik_marginal_ksi} and~\eqref{eq:loglik_subj} are both
+evaluated in numerically stable log-sum-exp form.
+
+Because the CPT value function (Sections~\ref{sec:cpt_value}--\ref{sec:ce})
+involves sorting operations and conditional branching, it is not automatically
+differentiable.  The likelihood is therefore wrapped as a \emph{blackbox
+operator} (PyTensor \texttt{as\_op}) and provided to the sampler without
+gradient information.
+
+\subsection{Joint Model}
+
+The complete generative model is:
+\begin{alignat}{2}
+  &\bpi                &&\sim \Dir(\alpha_0 \cdot \mathbf{1}_C),
+  \nonumber\\
+  &\sigma_{G,j}^2      &&\sim \IG(\alpha_{\mathrm{IG}},\, \beta_{\mathrm{IG}}),
+  \quad j=1,\ldots,5,
+  \nonumber\\
+  &\mu_{G,j} \mid \sigma_{G,j}
+                       &&\sim \Normal(\mu_{0,j},\, \sigma_{G,j}),
+  \nonumber\\
+  &q_{k,j} \mid \mu_{G,j}, \sigma_{G,j}
+                       &&\sim \Normal(\mu_{G,j},\, \sigma_{G,j}),
+  \nonumber\\
+  &\theta_{\mathrm{rest},k,j}
+                       &&= \underline{\theta}_j
+                         + (\overline{\theta}_j-\underline{\theta}_j)
+                           \operatorname{logit}^{-1}(q_{k,j}),
+  \nonumber\\
+  &\ba_k               &&\sim \Dir(\alpha_R \cdot \mathbf{1}_4),
+  \quad k=1,\ldots,C,
+  \nonumber\\
+  &v_i                 &&\sim \IG(a_\ksi,b_\ksi)
+  \quad\text{and integrated out},
+  \nonumber\\
+  &\mathrm{CE}^{\mathrm{obs}}_{\mathcal{O}_i} \mid \btheta_{1:C}, \bpi
+                       &&\sim \text{mixture as in \eqref{eq:loglik_marginal_ksi}}.
+  \label{eq:joint}
+\end{alignat}
+In the estimated-noise sensitivity specification, the $v_i$ line is replaced by
+Equations~\eqref{eq:prior_mu_ksi}--\eqref{eq:ksi_noncentered}; in the fixed
+specification, $\ksi_i=\ksi_{\mathrm{fixed}}$.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Posterior Inference via Sequential Monte Carlo}
+\label{sec:smc}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Why SMC?}
+
+Finite-mixture posteriors are generically multimodal due to \emph{label
+switching}: any permutation of the $C$ cluster indices leaves the likelihood
+invariant.  Gradient-based MCMC methods (HMC/NUTS) that initialise a single
+chain may become trapped in one mode and fail to explore the full posterior.
+Furthermore, the blackbox CPT likelihood (Section~\ref{sec:likelihood}) does
+not provide gradients, precluding the use of NUTS.
+
+Sequential Monte Carlo \citep[SMC;][]{DelMoral2006} avoids both difficulties.
+Starting from a set of particles drawn from the prior, SMC introduces the data
+gradually through a sequence of \emph{tempered} intermediate distributions
+\begin{equation}
+  p_\beta(\btheta,\, \bpi)
+  \propto p_{\mathrm{marg}}(\mathrm{data} \mid \btheta,\, \bpi)^{\beta}
+          \cdot p(\btheta,\, \bpi),
+  \qquad \beta \in [0, 1],
+  \label{eq:tempered}
+\end{equation}
+incrementing $\beta$ from 0 to 1 in adaptive stages.  Because all $C!$
+symmetric modes are equally reachable from the prior, the particle cloud
+naturally covers all modes before the posterior concentrates.
+
+\subsection{Implementation}
+
+Sampling is carried out with \texttt{pymc.sample\_smc} using the following
+settings (defaults):
+\begin{itemize}
+  \item $M = 3000$ particles per independent run;
+  \item $R = 5$ independent SMC runs (chains), each performing a full pass
+        from $\beta=0$ to $\beta=1$;
+  \item mutation kernels: random-walk Metropolis proposals on the full
+        unconstrained parameter space.
+\end{itemize}
+
+\subsection{Model Selection via Bayes Factors}
+\label{sec:model_selection}
+
+A key byproduct of SMC is a consistent estimator of the
+\emph{log marginal likelihood}:
+\begin{equation}
+  \log p(\mathrm{data})
+  \approx \sum_{s=1}^{S_{\mathrm{stages}}}
+           \log \frac{1}{M} \sum_{m=1}^{M}
+                w_m^{(s)},
+  \label{eq:log_ml}
+\end{equation}
+where $w_m^{(s)}$ is the incremental importance weight of particle $m$ at stage
+$s$.  The Bayes factor comparing models with $C$ and $C'$ clusters is
+\begin{equation}
+  \mathrm{BF}_{C,C'} = \exp\!\bigl(\log p_{C}(\mathrm{data})
+                                  - \log p_{C'}(\mathrm{data})\bigr),
+  \label{eq:bf}
+\end{equation}
+enabling direct selection of the number of clusters without cross-validation or
+ad hoc penalised-likelihood criteria.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Post-Sampling Analysis}
+\label{sec:postproc}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Label-Switching Correction}
+\label{sec:label_switching}
+
+Because the likelihood is invariant under permutation of cluster indices, the
+posterior is symmetric across $C!$ equivalent configurations.  For $C = 2$, we
+impose a \emph{post hoc} canonical ordering: within each posterior draw, the
+clusters are permuted so that
+\begin{equation}
+  \lambda_{\text{cluster 0}} \leq \lambda_{\text{cluster 1}},
+  \label{eq:label_switch}
+\end{equation}
+i.e.\ the cluster with the smaller loss-aversion parameter is always labelled
+cluster~0.  All derived quantities ($\bpi$, $\btheta$, $\ba$) are reordered
+consistently.
+
+\subsection{Soft Cluster Assignments (Responsibilities)}
+\label{sec:responsibilities}
+
+The posterior responsibility of cluster $k$ for subject $i$ is the
+posterior-averaged soft assignment:
+\begin{equation}
+  r_{ik} = \E_{\mathrm{post}}\!\left[
+    \frac{\pi_k \cdot L_{ik}}{\sum_{k'} \pi_{k'} \cdot L_{ik'}}
+  \right]
+  \approx \frac{1}{S} \sum_{s=1}^{S}
+    \frac{\pi_k^{(s)} \cdot L_{ik}^{(s)}}
+         {\sum_{k'} \pi_{k'}^{(s)} \cdot L_{ik'}^{(s)}},
+  \label{eq:responsibilities}
+\end{equation}
+where $L_{ik}^{(s)}$ is the cluster-$k$ likelihood for subject $i$ evaluated at
+the $s$-th posterior draw.  Under the marginalised-noise baseline,
+$L_{ik}^{(s)}$ is the integrated likelihood $m_{ik}(\btheta_k^{(s)})$ from
+Equation~\eqref{eq:ksi_marginal_lik}; under the estimated or fixed alternatives,
+it is the conditional Gaussian likelihood.  Here $S = M \times R$ is the total
+number of draws.
+
+\subsection{Posterior Summaries}
+
+For each parameter $\theta_{k,j}$, we report the posterior mean and the 94\%
+highest-density interval (HDI) computed across all $S$ posterior draws.
+
+\subsection{Convergence Diagnostics}
+\label{sec:convergence}
+
+Convergence is assessed using:
+\begin{itemize}
+  \item \textbf{$\hat{R}$ (potential scale-reduction factor)}: computed across
+    the $R$ independent SMC runs.  Values $\hat{R} < 1.05$ indicate adequate
+    agreement between runs.
+  \item \textbf{Effective Sample Size (ESS)}: bulk ESS computed per parameter.
+    We require $\mathrm{ESS} / \text{chain} \geq 100$.
+\end{itemize}
+Diagnostics are reported for all sampled variables: \texttt{theta\_rest},
+\texttt{a\_weights}, and \texttt{pi}.  In the estimated-noise sensitivity
+specification, diagnostics are additionally reported for \texttt{mu\_ksi} and
+\texttt{ksi}.  In the marginalised-noise baseline, \texttt{ksi} is not sampled
+and therefore has no posterior diagnostic.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Summary of Hyperparameter Choices}
+\label{sec:hyperparams}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{table}[h!]
+  \centering
+  \caption{Prior hyperparameter values.}
+  \label{tab:hyperparams}
+  \begin{tabular}{lll}
+    \toprule
+    Hyperparameter & Value & Role \\
+    \midrule
+    $\alpha_0$            & $1.0$  & Dirichlet concentration for $\bpi$ \\
+    $\alpha_{\mathrm{IG}}$& $3.0$  & InverseGamma shape for $\sigma_{G,j}^2$ \\
+    $\beta_{\mathrm{IG}}$ & $2.0$  & InverseGamma scale; $\E[\sigma_G^2]=1$ \\
+    $\mu_{0,j}$           & $0.0$  & Log-scale benchmark for $\alpha,\lambda,\gamma/\alpha_p,\delta$ \\
+    $\mu_{0,r}$           & $\frac{1}{2}[\ln\underline{r}+\ln\overline{r}]$
+                                   & Log-geometric midpoint for $r$ \\
+    $\alpha_R$            & $1.0$  & Dirichlet concentration for cluster-specific $\ba_k$ \\
+    $a_\ksi$              & $3.0$  & InverseGamma shape for marginalised $v_i=\ksi_i^2$ \\
+    $b_\ksi$              & $0.18$ & InverseGamma scale; $\E[v_i]=0.09$ \\
+    $\ksi_{\mathrm{fixed}}$& $0.3$ & Benchmark/fixed noise multiplier \\
+    $\sigma_\ksi^0$       & $0.3$  & HalfNormal scale for $\mu_\ksi$ when noise is estimated \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Software}
+\label{sec:software}
+% ══════════════════════════════════════════════════════════════════════════════
+
+The model is implemented in Python using
+\textbf{PyMC} (v5) for probabilistic programming,
+\textbf{PyTensor} for the blackbox likelihood operator,
+\textbf{ArviZ} for posterior diagnostics and visualisation, and
+\textbf{NumPy} / \textbf{SciPy} for numerical CPT evaluation.
+Posterior draws are stored in the \texttt{netCDF4} format via
+\textbf{xarray}.
+
+% ── References ────────────────────────────────────────────────────────────────
+\bibliographystyle{apalike}
+\begin{thebibliography}{9}
+
+\bibitem[Del Moral et al.(2006)]{DelMoral2006}
+Del Moral, P., Doucet, A., \& Jasra, A. (2006).
+Sequential Monte Carlo samplers.
+\textit{Journal of the Royal Statistical Society: Series B}, 68(3), 411--436.
+
+\bibitem[Prelec(1998)]{Prelec1998}
+Prelec, D. (1998).
+The probability weighting function.
+\textit{Econometrica}, 66(3), 497--527.
+
+\bibitem[Tversky \& Kahneman(1992)]{TK1992}
+Tversky, A., \& Kahneman, D. (1992).
+Advances in prospect theory: Cumulative representation of uncertainty.
+\textit{Journal of Risk and Uncertainty}, 5(4), 297--323.
+
+\end{thebibliography}
+
+\end{document}

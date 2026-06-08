@@ -1,5 +1,4 @@
 import pandas as pd
-import openpyxl
 from GlobalSettings import GlobalData
 
 to_drop = ["session_code", "participant_code", "lottery_stake", "num_failed_attempts", "failed_too_many_1", "failed_too_many_2", 

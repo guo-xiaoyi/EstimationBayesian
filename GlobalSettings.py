@@ -15,22 +15,28 @@ GlobalLotteryLowStake  = {k: v for k, v in _lot.lotteries_v2.items() if k not in
 GlobalLotteryNoCaliMix = {k: v for k, v in _lot.lotteries_v2.items() if k not in _NO_CALI}
 GlobalLottery = _lot.lotteries_v2
 
-# ── Parameter bounds (identical to Estimation/GlobalSettings.py) ───────────────
-# TK:     [r, alpha, lamb, gamma, s1, s2, s3, delta]
+# ── Parameter bounds ───────────────────────────────────────────────────────────
+# Structural CPT params per cluster: [r, alpha, lamb, gamma/palpha, delta]
+# Reference-point weights are continuous cluster-specific a_weights on the 4-simplex.
 GlobalTKBounds = [
-    (1e-6, 0.01), (0.5, 1.5), (0.99, 3.0), (0.2, 1.0),
+    (1e-6, 0.01), (0.5, 3), (0.5, 3.0), (0.2, 1.0),
     (0, 1), (0.0, 1), (0.0, 1), (0.2, 1),
 ]
-# Prelec: [r, alpha, lamb, beta, palpha, s1, s2, s3, delta]  (beta fixed at 1)
 GlobalPrelecBounds = [
     (1e-6, 0.1), (0.5, 1.5), (0.99, 3.5), (1.0, 1.0), (0.4, 1),
     (0, 1), (0.0, 1), (0.0, 1), (0.0, 1),
 ]
 GlobalKsiBounds = (1e-4, 1.5)
 
-# ── Variables Mixture.py / data.py / EM imports at load time ──────────────────
+# ── Model settings ─────────────────────────────────────────────────────────────
 GlobalMethod   = "tk"
-GlobalCluster  = 2
+GlobalCluster  = 1      # number of latent preference clusters (C)
+
+# Reference point components (Baillon, Bleichrodt & Spinu, 2015)
+# Continuous cluster-specific weights a_weights[k] live on these 4 components:
+# SQ = status quo, PA = partial adaptation, LE = lagged expectation, FE = forward expectation.
+GlobalK        = 4      # kept for compatibility; continuous RP weights require 4 components
+
 GlobalTol      = 1e-4
 GlobalInterMax = 1000
 GlobalData     = "/home/ubuntu/Estimation/gamedata.csv"
@@ -42,37 +48,28 @@ GlobalMasterSeed = 42
 GlobalSeedsSet   = np.random.default_rng(GlobalMasterSeed).integers(0, 10000, size=GlobalNSeeds).tolist()
 
 # ── SMC settings ───────────────────────────────────────────────────────────────
-GlobalDraws  = 1000     # particles per independent SMC run
-GlobalTune   = 5000    # unused by SMC; kept only for old scripts/imports
-GlobalChains = 4     # independent SMC runs
-GlobalSMCCores = None # None: use one worker per chain; set lower to queue chains
-GlobalSeed   = 42
+GlobalDraws    = 3000
+GlobalTune     = 5000   # unused by SMC; kept for legacy imports
+GlobalChains   = 5
+GlobalSMCCores = None
+GlobalSeed     = 42
 
 # ── Prior hyperparameters ──────────────────────────────────────────────────────
-GlobalPriorDirichlet = 1.0   # Dirichlet concentration for mixing weights
-GlobalPriorKsiSigma  = 0.3   # HalfNormal scale for the ksi hyperprior
-GlobalEstimateKsi    = False # False: fix ksi_i = GlobalFixedKsi for all subjects
-GlobalFixedKsi       = 0.3   # noise multiplier used when GlobalEstimateKsi is False
+GlobalPriorDirichlet = 1.0   # concentration for π (cluster mixing weights)
+GlobalPriorDirichletRP = 1.0 # concentration for cluster-specific a_weights
+GlobalKsiMode        = "marginalized"  # one of: "estimated", "fixed", "marginalized"
+GlobalPriorKsiSigma  = 0.3
+GlobalFixedKsi       = 0.3
+GlobalPriorKsiIGAlpha = 3.0
+GlobalPriorKsiIGBeta  = (GlobalPriorKsiIGAlpha - 1.0) * GlobalFixedKsi**2
+GlobalEstimateKsi    = GlobalKsiMode == "estimated"  # legacy compatibility
 
-# Normal-Inverse-Gamma-style hyperprior on (μ_G, σ_G²) for cluster-level LogNormals.
-#
-# σ_G²[j] ~ InverseGamma(GlobalPriorIG_Alpha, GlobalPriorIG_Beta)
-#   E[σ_G²] = Beta/(Alpha-1) = 1.0  →  σ_G ≈ 1 on the log-scale (diffuse but finite)
-#   This allows the prior to cover the full admissible range without dominating the posterior.
-#
-# μ_G[j] | σ_G[j] ~ Normal(μ_0[j], σ_G[j])
-#   μ_0[j] are the benchmark values in log-space (see GlobalPriorMu0 below).
-#   Centering at log(1)=0 for alpha, lamb, gamma/palpha, delta encodes the
-#   theoretically neutral points (linearity / no distortion / no loss aversion).
-#   The r benchmark uses the log geometric midpoint of its admissible range.
-GlobalPriorIG_Alpha = 3.0    # InverseGamma shape  (α > 2 ensures finite variance)
-GlobalPriorIG_Beta  = 2.0    # InverseGamma scale  (E[σ_G²] = 2/(3-1) = 1.0)
+# Normal-Inverse-Gamma hyperprior on log-scale structural parameters.
+# theta_rest follows a truncated LogNormal on the admissible bounds.
+GlobalPriorIG_Alpha = 3.0
+GlobalPriorIG_Beta  = 2.0
 
-# Benchmark log-scale means μ_0 for [r, alpha, lamb, gamma/palpha, delta].
-# Index:  0=r  1=alpha  2=lamb  3=gamma_or_palpha  4=delta
-# log(1) = 0 encodes the theoretically neutral point for power/weighting parameters.
-# r has no strong behavioral anchor, so we leave it as None to let build_model()
-# compute the geometric midpoint from the method-specific bounds at runtime.
+# Benchmark log-scale neutral values for [r, alpha, lamb, gamma/palpha, delta].
 GlobalPriorMu0 = [None, 0.0, 0.0, 0.0, 0.0]
 
 # ── Output paths ───────────────────────────────────────────────────────────────
