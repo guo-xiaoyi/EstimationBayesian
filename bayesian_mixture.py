@@ -7,7 +7,8 @@ Reference points are represented by continuous, cluster-specific weights:
 
 The full cluster parameter vector is assembled as:
 
-    theta_k = [r, alpha, lamb, gamma/palpha, a1, a2, a3, delta]
+    theta_k = [discount params, alpha_plus, alpha_minus, lamb,
+               gamma/palpha, a1, a2, a3, delta]
 
 where a4 is stored in a_weights but omitted from theta because it is the
 forward-looking component on the simplex. Structural parameters have a
@@ -28,7 +29,13 @@ import pymc as pm
 import arviz as az
 import xarray as xr
 
-from likelihood import cpt_loglik_marginal_ksi_op, cpt_loglik_op, get_free_bounds
+from likelihood import (
+    cpt_loglik_marginal_ksi_op,
+    cpt_loglik_op,
+    get_free_bounds,
+    get_free_param_names,
+    get_pre_rp_param_count,
+)
 from GlobalSettings import (
     GlobalPriorDirichlet,
     GlobalPriorDirichletRP,
@@ -36,24 +43,55 @@ from GlobalSettings import (
     GlobalPriorIG_Alpha,
     GlobalPriorIG_Beta,
     GlobalPriorMu0,
+    GlobalPriorMu0ByName,
     GlobalFixedKsi,
     GlobalKsiMode,
+    GlobalProgressBar,
     GlobalSMCCores,
 )
 
 
-def _benchmark_mu0(lower, upper):
-    """Return log-scale benchmark means for [r, alpha, lamb, gamma/palpha, delta]."""
+def _benchmark_mu0(lower, upper, free_names=None, param_indices=None):
+    """Return log-scale benchmark means for structural non-simplex parameters."""
     lower = np.asarray(lower, dtype=float)
     upper = np.asarray(upper, dtype=float)
+    if param_indices is None:
+        param_indices = range(len(lower))
+    if free_names is None:
+        free_names = [None] * len(lower)
     mu0 = np.empty(len(lower))
-    for j in range(len(lower)):
-        if GlobalPriorMu0[j] is not None:
-            mu0[j] = GlobalPriorMu0[j]
+    for j, (name, param_idx) in enumerate(zip(free_names, param_indices)):
+        configured = None
+        if name in GlobalPriorMu0ByName:
+            configured = GlobalPriorMu0ByName[name]
+        elif param_idx < len(GlobalPriorMu0):
+            configured = GlobalPriorMu0[param_idx]
+
+        if configured is not None:
+            mu0[j] = configured
         else:
             safe_lo = max(lower[j], 1e-8)
             mu0[j] = 0.5 * (np.log(safe_lo) + np.log(upper[j]))
     return mu0
+
+
+def _expand_fixed_columns(name, free_values, fixed_mask, fixed_values, C):
+    """
+    Rebuild a full (C, P) tensor from sampled free columns plus fixed constants.
+
+    Bounds with equal lower/upper endpoints are treated as fixed parameters.
+    They must not be passed to pm.Truncated because a zero-width truncation has
+    an undefined normalising constant and can produce NaN SMC weights.
+    """
+    columns = []
+    free_pos = 0
+    for is_fixed, fixed_value in zip(fixed_mask, fixed_values):
+        if is_fixed:
+            columns.append(pt.ones((C, 1)) * float(fixed_value))
+        else:
+            columns.append(free_values[:, free_pos:free_pos + 1])
+            free_pos += 1
+    return pm.Deterministic(name, pt.concatenate(columns, axis=1))
 
 
 def build_model(subjects, method, C, K=None):
@@ -68,35 +106,64 @@ def build_model(subjects, method, C, K=None):
 
     N = len(subjects)
     bounds_rest = get_free_bounds(method)
+    rest_names = get_free_param_names(method)
+    pre_rp_count = get_pre_rp_param_count(method)
     lower_rest = np.array([b[0] for b in bounds_rest])
     upper_rest = np.array([b[1] for b in bounds_rest])
-    lower_for_prior = np.maximum(lower_rest, 1e-6)
-    mu0 = _benchmark_mu0(lower_for_prior, upper_rest)
+    if np.any(lower_rest > upper_rest):
+        raise ValueError("Parameter bounds must satisfy lower <= upper.")
+
+    fixed_mask = np.isclose(lower_rest, upper_rest)
+    free_mask = ~fixed_mask
+    free_indices = np.flatnonzero(free_mask)
+    n_free = int(free_mask.sum())
+    lower_for_prior = np.maximum(lower_rest[free_mask], 1e-6)
+    upper_for_prior = upper_rest[free_mask]
+    free_names = [rest_names[i] for i in free_indices]
+    mu0 = _benchmark_mu0(
+        lower_for_prior,
+        upper_for_prior,
+        free_names=free_names,
+        param_indices=free_indices,
+    )
 
     with pm.Model() as model:
         pi = pm.Dirichlet("pi", a=np.ones(C) * GlobalPriorDirichlet)
 
-        sigma_G_sq = pm.InverseGamma(
-            "sigma_G_sq",
-            alpha=GlobalPriorIG_Alpha,
-            beta=GlobalPriorIG_Beta,
-            shape=5,
-        )
-        sigma_G = pm.Deterministic("sigma_G", pt.sqrt(sigma_G_sq))
-        mu_G = pm.Normal("mu_G", mu=mu0, sigma=sigma_G, shape=5)
+        if n_free:
+            sigma_G_sq = pm.InverseGamma(
+                "sigma_G_sq",
+                alpha=GlobalPriorIG_Alpha,
+                beta=GlobalPriorIG_Beta,
+                shape=n_free,
+            )
+            sigma_G = pm.Deterministic("sigma_G", pt.sqrt(sigma_G_sq))
+            mu_G = pm.Normal("mu_G", mu=mu0, sigma=sigma_G, shape=n_free)
 
-        theta_rest_dist = pm.LogNormal.dist(
-            mu=mu_G,
-            sigma=sigma_G,
-            shape=(C, 5),
-        )
-        theta_rest = pm.Truncated(
-            "theta_rest",
-            theta_rest_dist,
-            lower=lower_for_prior,
-            upper=upper_rest,
-            shape=(C, 5),
-        )
+            theta_rest_dist = pm.LogNormal.dist(
+                mu=mu_G,
+                sigma=sigma_G,
+                shape=(C, n_free),
+            )
+            theta_rest_free = pm.Truncated(
+                "theta_rest_free",
+                theta_rest_dist,
+                lower=lower_for_prior,
+                upper=upper_for_prior,
+                shape=(C, n_free),
+            )
+            theta_rest = _expand_fixed_columns(
+                "theta_rest",
+                theta_rest_free,
+                fixed_mask,
+                lower_rest,
+                C,
+            )
+        else:
+            theta_rest = pm.Deterministic(
+                "theta_rest",
+                pt.ones((C, len(lower_rest))) * lower_rest,
+            )
 
         # One continuous reference-point weight vector per cluster.
         a_weights = pm.Dirichlet(
@@ -108,7 +175,11 @@ def build_model(subjects, method, C, K=None):
         theta = pm.Deterministic(
             "theta",
             pt.concatenate(
-                [theta_rest[:, :4], a_weights[:, :3], theta_rest[:, 4:]],
+                [
+                    theta_rest[:, :pre_rp_count],
+                    a_weights[:, :3],
+                    theta_rest[:, pre_rp_count:],
+                ],
                 axis=1,
             ),
         )
@@ -131,16 +202,18 @@ def build_model(subjects, method, C, K=None):
     return model
 
 
-def run_sampling(model, draws=2000, chains=4, seed=42):
+def run_sampling(model, draws=2000, chains=4, seed=42, cores=None, progressbar=None):
     """Sample from the posterior using PyMC Sequential Monte Carlo."""
-    cores = chains if GlobalSMCCores is None else min(chains, GlobalSMCCores)
+    configured_cores = GlobalSMCCores if cores is None else cores
+    cores = chains if configured_cores is None else min(chains, configured_cores)
+    progressbar = GlobalProgressBar if progressbar is None else progressbar
 
     with model:
         idata = pm.sample_smc(
             draws=draws,
             chains=chains,
             random_seed=seed,
-            progressbar=True,
+            progressbar=progressbar,
             cores=cores,
             return_inferencedata=True,
             compute_convergence_checks=False,

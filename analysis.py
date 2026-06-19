@@ -22,18 +22,17 @@ from likelihood import (
     compute_marginal_ksi_subject_loglik,
     _compute_ce_th,
     _free_to_full,
-    PARAM_NAMES,
+    get_free_param_names,
+    get_param_names,
     RP_COMPONENT_NAMES,
 )
 
 
 def fix_label_switching(idata, method, C=2):
     """
-    For C=2, sort clusters in every draw so cluster 0 has the smaller lambda.
+    Sort clusters in every draw by lambda, ascending.
     """
-    del method
-
-    if C != 2:
+    if C < 2:
         return idata
 
     theta = idata.posterior["theta"].values
@@ -41,13 +40,13 @@ def fix_label_switching(idata, method, C=2):
     a_weights = idata.posterior["a_weights"].values
     pi = idata.posterior["pi"].values
 
-    lamb_idx = 2
-    mask = theta[:, :, 0, lamb_idx] > theta[:, :, 1, lamb_idx]
+    lamb_idx = get_param_names(method).index("lamb")
+    order = np.argsort(theta[..., lamb_idx], axis=2)
 
-    theta[mask] = theta[mask][:, [1, 0], :]
-    theta_rest[mask] = theta_rest[mask][:, [1, 0], :]
-    a_weights[mask] = a_weights[mask][:, [1, 0], :]
-    pi[mask] = pi[mask][:, [1, 0]]
+    theta = np.take_along_axis(theta, order[..., None], axis=2)
+    theta_rest = np.take_along_axis(theta_rest, order[..., None], axis=2)
+    a_weights = np.take_along_axis(a_weights, order[..., None], axis=2)
+    pi = np.take_along_axis(pi, order, axis=2)
 
     idata.posterior["theta"].values = theta
     idata.posterior["theta_rest"].values = theta_rest
@@ -74,7 +73,7 @@ def extract_cluster_params(idata, method, C):
     pi_flat = pi_draws.reshape(S, C)
     a_flat = a_draws.reshape(S, C, 4)
 
-    names = PARAM_NAMES[method]
+    names = get_param_names(method)
     rows = []
 
     for k in range(C):
@@ -213,10 +212,11 @@ def print_summary(cluster_df, ref_df, resp, subjects):
         pi_row = sub[sub["param"] == "pi"].iloc[0]
         print(f"\n  Cluster {k}  (pi = {pi_row['mean']:.3f}  "
               f"[{pi_row['hdi_low']:.3f}, {pi_row['hdi_high']:.3f}])")
-        print(f"  {'Param':<10} {'Mean':>8}  {'94% HDI':>20}")
-        print("  " + "-" * 42)
+        name_width = max(10, int(sub["param"].astype(str).str.len().max()))
+        print(f"  {'Param':<{name_width}} {'Mean':>8}  {'94% HDI':>20}")
+        print("  " + "-" * (name_width + 32))
         for _, row in sub[sub["param"] != "pi"].iterrows():
-            print(f"  {row['param']:<10} {row['mean']:>8.4f}  "
+            print(f"  {row['param']:<{name_width}} {row['mean']:>8.4f}  "
                   f"[{row['hdi_low']:>7.4f}, {row['hdi_high']:>7.4f}]")
 
     print("\n  Reference-point weights by cluster:")
@@ -242,8 +242,7 @@ def check_convergence(idata, method, C):
     """
     Per-parameter R-hat and ESS for theta_rest, a_weights, pi, and noise vars.
     """
-    names = PARAM_NAMES[method]
-    rest_names = [name for name in names if name not in ("a1", "a2", "a3")]
+    rest_names = get_free_param_names(method)
     a_names = ["a1", "a2", "a3", "a4"]
     posterior = idata.posterior
     estimate_ksi = "mu_ksi" in posterior
@@ -387,7 +386,7 @@ def plot_posteriors(idata, output_dir="outputs/plots", method="tk"):
     theta = idata.posterior["theta"].values
     _, _, C, P = theta.shape
     theta_flat = theta.reshape(-1, C, P)
-    names = PARAM_NAMES[method]
+    names = get_param_names(method)
 
     fig, axes = plt.subplots(P, C, figsize=(4 * C, 2 * P), squeeze=False)
     for k in range(C):

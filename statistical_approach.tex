@@ -66,39 +66,44 @@ multimodal posteriors that arise in mixture settings.
 \subsection{Utility and Temporal Discounting}
 
 Outcomes are payoff \emph{streams} $\mathbf{o} = (o_0, o_1, \ldots, o_T)$
-received at periods $0, 1, \ldots, T$.  Future payoffs are discounted
-exponentially:
+received at periods $0, 1, \ldots, T$.  In the current specification, future
+payoffs are discounted hyperbolically:
 \begin{equation}
-  \rho(t;\, r) = e^{-r\,t}, \qquad r > 0,
+  \rho(t;\, r) = \frac{1}{1+r\,t}, \qquad r > 0,
   \label{eq:discount}
 \end{equation}
 yielding the \emph{discounted aggregate}
 $\tilde{x}(\mathbf{o}; r) = \sum_{t=0}^{T} \rho(t;\,r)\,o_t$.
 
 The value of a discounted aggregate relative to a reference point $R$ is given
-by a power utility function with loss aversion:
+by a domain-specific CARA utility function with loss aversion:
 \begin{equation}
-  u(x;\, \alpha,\, \lambda,\, R) =
+  u(x;\, \alpha_+,\, \alpha_-,\, \lambda,\, R) =
   \begin{cases}
-    (x - R)^{\alpha}        & \text{if } x \geq R, \\[4pt]
-    -\lambda\,(R - x)^{\alpha} & \text{if } x < R,
+    \dfrac{1-\exp[-\alpha_+(x-R)]}{\alpha_+}
+      & \text{if } x \geq R, \\[10pt]
+    -\lambda\,\dfrac{\exp[\alpha_-(R-x)]-1}{\alpha_-}
+      & \text{if } x < R,
   \end{cases}
   \label{eq:utility}
 \end{equation}
-where $\alpha \in (0, \infty)$ is the curvature of the utility function and
-$\lambda > 1$ captures loss aversion.  The \emph{present value} of an outcome
-stream is therefore
+where $\alpha_+,\alpha_- \in (0, \infty)$ are gain- and loss-domain absolute
+risk-aversion coefficients, and $\lambda > 0$ captures loss aversion when
+$\lambda>1$.  The
+\emph{present value} of an outcome stream is therefore
 \begin{equation}
-  \mathrm{PV}(\mathbf{o};\, r,\, R,\, \alpha,\, \lambda)
-  = u\!\left(\tilde{x}(\mathbf{o};\,r);\; \alpha,\, \lambda,\, R\right).
+  \mathrm{PV}(\mathbf{o};\, r,\, R,\, \alpha_+,\, \alpha_-,\, \lambda)
+  = u\!\left(\tilde{x}(\mathbf{o};\,r);\; \alpha_+,\, \alpha_-,\, \lambda,\, R\right).
   \label{eq:pv}
 \end{equation}
 The inverse of $u$ is used to convert CPT values back to the monetary scale:
 \begin{equation}
-  u^{-1}(y;\, \alpha,\, \lambda,\, R) =
+  u^{-1}(y;\, \alpha_+,\, \alpha_-,\, \lambda,\, R) =
   \begin{cases}
-    y^{1/\alpha} + R        & \text{if } y \geq 0, \\[4pt]
-    -\!\left(-y/\lambda\right)^{1/\alpha} + R & \text{if } y < 0.
+    R - \dfrac{\ln(1-\alpha_+ y)}{\alpha_+}
+      & \text{if } y \geq 0, \\[10pt]
+    R - \dfrac{\ln(1-\alpha_- y/\lambda)}{\alpha_-}
+      & \text{if } y < 0.
   \end{cases}
   \label{eq:utility_inv}
 \end{equation}
@@ -204,7 +209,8 @@ For each observation $\ell$ pertaining to lottery $L_\ell$ elicited at session
 $t_\ell$, the \emph{theoretical certainty equivalent} is
 \begin{equation}
   \mathrm{CE}^{\mathrm{th}}(\btheta;\, \ell)
-  = u^{-1}\!\bigl(V(L_\ell;\, R_\ell,\, \btheta);\; \alpha,\, \lambda,\, R_\ell\bigr)
+  = u^{-1}\!\bigl(V(L_\ell;\, R_\ell,\, \btheta);\;
+                  \alpha_+,\, \alpha_-,\, \lambda,\, R_\ell\bigr)
   - Z_{t_\ell},
   \label{eq:ce_th}
 \end{equation}
@@ -212,8 +218,9 @@ where $R_\ell = R(t_\ell)$ is the composite reference point evaluated at
 session $t_\ell$ and $Z_{t_\ell}$ is the cumulative realised payoff up to that
 session.  The full CPT parameter vector for a cluster is
 \begin{equation}
-  \btheta = (r,\, \alpha,\, \lambda,\, \gamma\text{ or }\alpha_p,\,
-             a_1,\, a_2,\, a_3,\, \delta) \in \R^8.
+  \btheta = (r,\, \alpha_+,\, \alpha_-,\, \lambda,\,
+             \gamma\text{ or }\alpha_p,\,
+             a_1,\, a_2,\, a_3,\, \delta) \in \R^9.
   \label{eq:param_vec}
 \end{equation}
 
@@ -229,7 +236,7 @@ We posit $C$ latent preference types.  Each subject $i \in \{1,\ldots,N\}$ is
 drawn from one of the $C$ clusters, but cluster membership is \emph{latent} and
 treated as a nuisance variable that is integrated out analytically (soft
 assignment).  The cluster parameter matrices are
-$\btheta_k \in \R^8$ for $k = 1, \ldots, C$, and the mixing weights
+$\btheta_k \in \R^9$ for $k = 1, \ldots, C$, and the mixing weights
 $\bpi = (\pi_1, \ldots, \pi_C)$ satisfy $\pi_k \geq 0$, $\sum_k \pi_k = 1$.
 
 \subsection{Prior Distributions}
@@ -249,14 +256,14 @@ the population.
 
 \subsubsection{Hyperprior on Structural Parameters (Normal-Inverse-Gamma)}
 
-The five structural CPT parameters
-$(r,\, \alpha,\, \lambda,\, \gamma\text{ or }\alpha_p,\, \delta)$
+The six structural CPT parameters
+$(r,\, \alpha_+,\, \alpha_-,\, \lambda,\, \gamma\text{ or }\alpha_p,\, \delta)$
 are assigned a hierarchical truncated LogNormal prior.  A Normal-Inverse-Gamma
 (NIG) hierarchical prior governs the population-level log mean $\mu_G$ and
 log-scale variance $\sigma_G^2$:
 \begin{align}
   \sigma_{G,j}^2 &\sim \IG\!\left(\alpha_{\mathrm{IG}},\; \beta_{\mathrm{IG}}\right),
-                  \qquad j = 1, \ldots, 5,
+                  \qquad j = 1, \ldots, 6,
   \label{eq:prior_sigma_G}\\
   \mu_{G,j} \mid \sigma_{G,j}
                  &\sim \Normal\!\left(\mu_{0,j},\; \sigma_{G,j}\right),
@@ -271,8 +278,10 @@ log scale:
 \begin{equation}
   \mu_{0,j} =
   \begin{cases}
-    0 = \ln 1 & \text{for } \alpha,\, \lambda,\, \gamma/\alpha_p,\, \delta
-                 \quad\text{(no curvature / no distortion / no loss aversion)}, \\[4pt]
+    \ln(10^{-3}) & \text{for } \alpha_+,\, \alpha_-
+                 \quad\text{(near risk-neutral CARA benchmark)}, \\[4pt]
+    0 = \ln 1 & \text{for } \lambda,\, \gamma/\alpha_p,\, \delta
+                 \quad\text{(no loss aversion / no distortion)}, \\[4pt]
     \tfrac{1}{2}\!\left[\ln(\underline{r}) + \ln(\overline{r})\right]
                & \text{for } r \quad\text{(log-geometric midpoint of the admissible range)}.
   \end{cases}
@@ -281,7 +290,7 @@ log scale:
 
 \subsubsection{Cluster-Level Structural Parameters}
 
-Each cluster's five structural parameters inherit their log-location and
+Each cluster's six structural parameters inherit their log-location and
 log-scale from the NIG hyperprior and are truncated to the method-specific
 admissible bounds:
 \begin{align}
@@ -291,7 +300,7 @@ admissible bounds:
        \underline{\theta}_j \leq \theta_{\mathrm{rest},k,j}
        \leq \overline{\theta}_j
        \right],
-  \quad k = 1, \ldots, C,\; j = 1, \ldots, 5.
+  \quad k = 1, \ldots, C,\; j = 1, \ldots, 6.
   \label{eq:prior_theta_rest}
 \end{align}
 where $[\underline{\theta}_j, \overline{\theta}_j]$ are the method-specific
@@ -306,11 +315,12 @@ admissible bounds listed in Table~\ref{tab:bounds}.
     Parameter & TK (1992) & Prelec (1998) \\
     \midrule
     $r$           & $(10^{-6},\; 0.01)$  & $(10^{-6},\; 0.1)$ \\
-    $\alpha$      & $(0.5,\; 1.5)$       & $(0.5,\; 1.5)$     \\
-    $\lambda$     & $(0.99,\; 3.0)$      & $(0.99,\; 3.5)$    \\
+    $\alpha_+$    & $(10^{-5},\; 10^{-2})$ & $(10^{-5},\; 10^{-2})$ \\
+    $\alpha_-$    & $(10^{-5},\; 10^{-2})$ & $(10^{-5},\; 10^{-2})$ \\
+    $\lambda$     & $(0.5,\; 3.0)$       & $(0.5,\; 3.0)$     \\
     $\gamma$ / $\alpha_p$
                   & $(0.2,\; 1.0)$       & $(0.4,\; 1.0)$     \\
-    $\delta$      & $(0.2,\; 1.0)$       & $(0.0,\; 1.0)$     \\
+    $\delta$      & $1$ fixed            & $(0.0,\; 1.0)$     \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -456,7 +466,7 @@ The complete generative model is:
   &\bpi                &&\sim \Dir(\alpha_0 \cdot \mathbf{1}_C),
   \nonumber\\
   &\sigma_{G,j}^2      &&\sim \IG(\alpha_{\mathrm{IG}},\, \beta_{\mathrm{IG}}),
-  \quad j=1,\ldots,5,
+  \quad j=1,\ldots,6,
   \nonumber\\
   &\mu_{G,j} \mid \sigma_{G,j}
                        &&\sim \Normal(\mu_{0,j},\, \sigma_{G,j}),
@@ -624,7 +634,8 @@ and therefore has no posterior diagnostic.
     $\alpha_0$            & $1.0$  & Dirichlet concentration for $\bpi$ \\
     $\alpha_{\mathrm{IG}}$& $3.0$  & InverseGamma shape for $\sigma_{G,j}^2$ \\
     $\beta_{\mathrm{IG}}$ & $2.0$  & InverseGamma scale; $\E[\sigma_G^2]=1$ \\
-    $\mu_{0,j}$           & $0.0$  & Log-scale benchmark for $\alpha,\lambda,\gamma/\alpha_p,\delta$ \\
+    $\mu_{0,\alpha}$      & $\ln(10^{-3})$ & Log-scale CARA benchmark for $\alpha_+,\alpha_-$ \\
+    $\mu_{0,j}$           & $0.0$  & Log-scale benchmark for $\lambda,\gamma/\alpha_p,\delta$ \\
     $\mu_{0,r}$           & $\frac{1}{2}[\ln\underline{r}+\ln\overline{r}]$
                                    & Log-geometric midpoint for $r$ \\
     $\alpha_R$            & $1.0$  & Dirichlet concentration for cluster-specific $\ba_k$ \\

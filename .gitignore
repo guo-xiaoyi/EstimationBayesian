@@ -10,3 +10,4 @@ pilot.xlsx
 /__pycache__/
 *.pyc
 *.txt
+/batch_outputs/

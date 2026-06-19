@@ -13,17 +13,20 @@ import numpy as np
 
 from GlobalSettings import (
     GlobalCluster,
+    GlobalDiscounting,
     GlobalMethod,
     GlobalDraws,
     GlobalChains,
     GlobalSeed,
+    GlobalOutputDir,
     GlobalTracePath,
     GlobalSummaryCSV,
     GlobalPlotsDir,
     GlobalKsiMode,
+    GlobalLotterySetName,
 )
 from preprocessing import load_and_preprocess
-from likelihood import setup_likelihood
+from likelihood import get_free_bounds, setup_likelihood
 from bayesian_mixture import build_model, run_sampling, save_trace, load_trace
 from analysis import (
     fix_label_switching,
@@ -54,6 +57,16 @@ def _finite_sample_stat_values(data_array):
     return list(_iter_numeric(values))
 
 
+def _resolve_output_paths(output_dir=None):
+    if output_dir is None:
+        return GlobalTracePath, GlobalSummaryCSV, GlobalPlotsDir
+    return (
+        os.path.join(output_dir, "trace.nc"),
+        os.path.join(output_dir, "summary.csv"),
+        os.path.join(output_dir, "plots"),
+    )
+
+
 def _validate_trace_matches_data(idata, n_subjects):
     # Guard against loading a stale trace produced by an older parameterisation
     # or a different dataset (different number of subjects).
@@ -71,6 +84,35 @@ def _validate_trace_matches_data(idata, n_subjects):
             raise ValueError(
                 f"Saved trace is missing {required_var!r}. "
                 "Re-run sampling without --load."
+            )
+    bounds_rest = get_free_bounds(GlobalMethod)
+    expected_rest_dim = len(bounds_rest)
+    trace_rest_dim = idata.posterior["theta_rest"].shape[-1]
+    if trace_rest_dim != expected_rest_dim:
+        raise ValueError(
+            f"Saved trace has theta_rest dimension {trace_rest_dim}, but the "
+            f"current parameterisation expects {expected_rest_dim}. Re-run "
+            "sampling without --load."
+        )
+    if "theta" in idata.posterior:
+        expected_theta_dim = expected_rest_dim + 3
+        trace_theta_dim = idata.posterior["theta"].shape[-1]
+        if trace_theta_dim != expected_theta_dim:
+            raise ValueError(
+                f"Saved trace has theta dimension {trace_theta_dim}, but the "
+                f"current parameterisation expects {expected_theta_dim}. Re-run "
+                "sampling without --load."
+            )
+    lower_rest = np.array([b[0] for b in bounds_rest], dtype=float)
+    upper_rest = np.array([b[1] for b in bounds_rest], dtype=float)
+    fixed_mask = np.isclose(lower_rest, upper_rest)
+    if np.any(fixed_mask):
+        fixed_draws = idata.posterior["theta_rest"].values[..., fixed_mask]
+        fixed_values = lower_rest[fixed_mask]
+        if not np.allclose(fixed_draws, fixed_values, rtol=1e-8, atol=1e-8):
+            raise ValueError(
+                "Saved trace does not match the current fixed structural "
+                "parameter bounds. Re-run sampling without --load."
             )
     has_ksi = "ksi" in idata.posterior
     has_mu_ksi = "mu_ksi" in idata.posterior
@@ -107,16 +149,27 @@ def _validate_trace_matches_data(idata, n_subjects):
         )
 
 
-def main(draws=None, chains=None, clusters=None, load=False):
+def main(
+    draws=None,
+    chains=None,
+    clusters=None,
+    load=False,
+    output_dir=None,
+    seed=None,
+    smc_cores=None,
+    progressbar=None,
+):
     # CLI overrides take precedence; fall back to GlobalSettings values.
-    draws = draws or GlobalDraws
-    chains = chains or GlobalChains
+    draws = GlobalDraws if draws is None else draws
+    chains = GlobalChains if chains is None else chains
     C = clusters if clusters is not None else GlobalCluster
+    seed = GlobalSeed if seed is None else seed
+    trace_path, summary_csv, plots_dir = _resolve_output_paths(output_dir)
 
-    os.makedirs(GlobalPlotsDir, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
 
     # --- Data ---
-    print("Loading and preprocessing data ...")
+    print(f"Loading and preprocessing data (lottery_set={GlobalLotterySetName}) ...")
     preproc, subjects, subj_index, lotteries = load_and_preprocess()
     del subj_index  # only needed inside preprocessing
     print(f"  {len(subjects)} subjects, {preproc[0].shape[0]} observations")
@@ -126,30 +179,41 @@ def main(draws=None, chains=None, clusters=None, load=False):
     setup_likelihood(preproc, lotteries, subjects, GlobalMethod, C)
 
     # --- Sampling or loading ---
-    if load and os.path.exists(GlobalTracePath):
-        print(f"Loading trace from {GlobalTracePath} ...")
-        idata = load_trace(GlobalTracePath)
+    if load and os.path.exists(trace_path):
+        print(f"Loading trace from {trace_path} ...")
+        idata = load_trace(trace_path)
     else:
         print(
             f"Building model (C={C} clusters, method={GlobalMethod}, "
-            f"ksi={GlobalKsiMode}) ..."
+            f"discounting={GlobalDiscounting}, ksi={GlobalKsiMode}) ..."
         )
         model = build_model(subjects, GlobalMethod, C)
 
-        print(f"Sampling (SMC: particles={draws}, chains={chains}) ...")
-        idata = run_sampling(model, draws=draws, chains=chains, seed=GlobalSeed)
+        cores_label = smc_cores if smc_cores is not None else "auto"
+        print(
+            f"Sampling (SMC: particles={draws}, chains={chains}, "
+            f"cores={cores_label}, seed={seed}) ..."
+        )
+        idata = run_sampling(
+            model,
+            draws=draws,
+            chains=chains,
+            seed=seed,
+            cores=smc_cores,
+            progressbar=progressbar,
+        )
 
     # Catch mismatches between a saved trace and the current data/parameterisation.
     _validate_trace_matches_data(idata, len(subjects))
 
     # --- Post-processing ---
-    # For C=2, sort clusters by lambda so cluster 0 is always the low-loss-aversion type.
+    # Sort clusters by lambda so labels represent low-to-high loss aversion.
     print("Fixing label switching ...")
     idata = fix_label_switching(idata, GlobalMethod, C)
 
     # Only write the trace after a fresh sampling run, not when reloading.
-    if not (load and os.path.exists(GlobalTracePath)):
-        save_trace(idata, GlobalTracePath)
+    if not (load and os.path.exists(trace_path)):
+        save_trace(idata, trace_path)
 
     # --- Posterior summaries ---
     print("Extracting cluster parameters ...")
@@ -165,17 +229,17 @@ def main(draws=None, chains=None, clusters=None, load=False):
     )
 
     # --- Output ---
-    cluster_df.to_csv(GlobalSummaryCSV, index=False)
-    print(f"Cluster summary saved -> {GlobalSummaryCSV}")
+    cluster_df.to_csv(summary_csv, index=False)
+    print(f"Cluster summary saved -> {summary_csv}")
 
-    ref_path = GlobalSummaryCSV.replace(".csv", "_reference_weights.csv")
+    ref_path = summary_csv.replace(".csv", "_reference_weights.csv")
     ref_df.to_csv(ref_path, index=False)
     print(f"Reference weights saved -> {ref_path}")
 
     print_summary(cluster_df, ref_df, resp, subjects)
 
     print("Saving posterior plots ...")
-    plot_posteriors(idata, GlobalPlotsDir, method=GlobalMethod)
+    plot_posteriors(idata, plots_dir, method=GlobalMethod)
 
     # --- Convergence diagnostics ---
     # R-hat compares within-chain vs between-chain variance across SMC runs.
@@ -209,7 +273,20 @@ if __name__ == "__main__":
     parser.add_argument("--draws",    type=int,  default=None, help="SMC particles per chain (overrides GlobalDraws)")
     parser.add_argument("--chains",   type=int,  default=None, help="number of independent SMC runs (overrides GlobalChains)")
     parser.add_argument("--clusters", type=int,  default=None, help="number of latent clusters C (overrides GlobalCluster)")
-    parser.add_argument("--load",     action="store_true",     help="skip sampling and reload trace from GlobalTracePath")
+    parser.add_argument("--seed",     type=int,  default=None, help="random seed (overrides GlobalSeed)")
+    parser.add_argument("--smc-cores", type=int, default=None, help="cores used inside PyMC SMC for this run")
+    parser.add_argument("--output-dir", default=None, help=f"directory for trace, summaries, and plots (default: {GlobalOutputDir})")
+    parser.add_argument("--no-progress", action="store_true", help="disable PyMC progress bars")
+    parser.add_argument("--load",     action="store_true",     help="skip sampling and reload trace from output-dir/trace.nc")
     args = parser.parse_args()
 
-    main(draws=args.draws, chains=args.chains, clusters=args.clusters, load=args.load)
+    main(
+        draws=args.draws,
+        chains=args.chains,
+        clusters=args.clusters,
+        load=args.load,
+        output_dir=args.output_dir,
+        seed=args.seed,
+        smc_cores=args.smc_cores,
+        progressbar=not args.no_progress,
+    )

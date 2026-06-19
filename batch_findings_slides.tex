@@ -1,0 +1,133 @@
+\documentclass[10pt]{article}
+
+\usepackage[paperwidth=16cm,paperheight=9cm,margin=0.55cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\pagestyle{empty}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.22em}
+\renewcommand{\arraystretch}{1.10}
+
+\newcommand{\slidetitle}[1]{%
+  {\Large\bfseries #1}\par\vspace{0.20em}
+  \textcolor{black!35}{\rule{\textwidth}{0.45pt}}\vspace{0.25em}
+}
+\newcommand{\note}[1]{{\scriptsize\textcolor{black!70}{#1}}}
+
+\begin{document}
+
+\slidetitle{Full Lotteries: Cross-Cluster Comparison}
+
+{\scriptsize
+TK probability weighting; 2,000 SMC particles $\times$ 5 chains; $\kappa_i$
+marginalized; posterior means reported. \textbf{All runs fix $\delta=1$.}
+Reference-point columns are $(SQ, PA, LE, FE)$ and sum to one.
+}
+
+\vspace{0.20em}
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrrrrl}
+\toprule
+Model & Cluster & $\pi$ & $r\,(\times10^{-4})$ & $\alpha$ & $\lambda$ & $\gamma$
+& SQ & PA & LE & FE & Dominant RP \\
+\midrule
+$C=1$ & 0 & 1.000 & 0.84 & 0.928 & 0.538 & 0.605
+& 0.047 & 0.604 & 0.027 & 0.322 & PA \\
+\addlinespace
+$C=2$ & 0 & 0.373 & 14.67 & 1.510 & 0.502 & 0.967
+& 0.004 & 0.004 & 0.004 & 0.988 & FE \\
+$C=2$ & 1 & 0.627 & 1.33 & 1.057 & 1.194 & 0.514
+& 0.126 & 0.701 & 0.149 & 0.024 & PA \\
+\addlinespace
+$C=3$ & 0 & 0.373 & 1.22 & 1.066 & 1.113 & 0.477
+& 0.167 & 0.376 & 0.414 & 0.042 & LE \\
+$C=3$ & 1 & 0.335 & 7.11 & 1.354 & 0.739 & 0.770
+& 0.063 & 0.179 & 0.147 & 0.611 & FE \\
+$C=3$ & 2 & 0.292 & 2.31 & 1.248 & 0.817 & 0.638
+& 0.096 & 0.282 & 0.197 & 0.425 & FE \\
+\bottomrule
+\end{tabular}}
+
+\vspace{0.35em}
+\begin{minipage}[t]{0.72\textwidth}
+\scriptsize
+\textbf{Comments.}
+The pooled $C=1$ model mixes PA and FE reference points and gives a low
+$\lambda=0.538$. Moving to $C=2$ reveals a sharp split: a smaller FE-dominated,
+low-$\lambda$ group and a larger PA-dominated, high-$\lambda$ group. The $C=3$
+run further divides the population into one LE/high-$\lambda$ cluster and two
+more FE-oriented moderate-$\lambda$ clusters, but those labels should be read
+cautiously because $C=3$ is not label-sorted in the code.
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.25\textwidth}
+\scriptsize
+\textbf{Fit/diagnostics.}\\
+Log ML: $C=1$ -99,810; $C=2$ -99,114; $C=3$ -98,848.\\
+$C=1$ passes diagnostics; $C=2/3$ improve fit but have weak SMC diagnostics
+($\hat R_{\max}=1.56/2.46$, min ESS/chain $=1.7/1.2$).
+\end{minipage}
+
+\newpage
+
+\slidetitle{No-Cali-Mix Lotteries: Cross-Cluster Comparison}
+
+{\scriptsize
+TK probability weighting; 2,000 SMC particles $\times$ 5 chains; $\kappa_i$
+marginalized; posterior means reported. \textbf{All runs fix $\delta=1$.}
+This set removes \texttt{cali\_mix}, \texttt{cali\_mix\_pres}, and \texttt{lottery\_8}.
+}
+
+\vspace{0.20em}
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrrrrl}
+\toprule
+Model & Cluster & $\pi$ & $r\,(\times10^{-4})$ & $\alpha$ & $\lambda$ & $\gamma$
+& SQ & PA & LE & FE & Dominant RP \\
+\midrule
+$C=1$ & 0 & 1.000 & 0.93 & 0.852 & 0.982 & 0.626
+& 0.281 & 0.248 & 0.165 & 0.306 & FE \\
+\addlinespace
+$C=2$ & 0 & 0.432 & 12.38 & 1.359 & 0.504 & 0.852
+& 0.003 & 0.003 & 0.003 & 0.992 & FE \\
+$C=2$ & 1 & 0.568 & 1.57 & 1.109 & 1.270 & 0.489
+& 0.162 & 0.214 & 0.564 & 0.061 & LE \\
+\addlinespace
+$C=3$ & 0 & 0.328 & 1.77 & 1.142 & 1.139 & 0.543
+& 0.160 & 0.180 & 0.401 & 0.260 & LE \\
+$C=3$ & 1 & 0.390 & 10.87 & 1.404 & 0.658 & 0.898
+& 0.056 & 0.029 & 0.102 & 0.813 & FE \\
+$C=3$ & 2 & 0.282 & 1.85 & 1.049 & 1.454 & 0.417
+& 0.208 & 0.198 & 0.522 & 0.071 & LE \\
+\bottomrule
+\end{tabular}}
+
+\vspace{0.35em}
+\begin{minipage}[t]{0.72\textwidth}
+\scriptsize
+\textbf{Comments.}
+Without the California-mix lotteries, the pooled model shifts toward higher
+$\lambda$ and a diffuse reference point. The $C=2$ structure is especially
+clear: one FE-dominated, low-$\lambda$ group and one LE-dominated, high-$\lambda$
+group. In $C=3$, the FE group remains distinct, while the higher-$\lambda$
+mass is split into two LE-leaning clusters, one with moderate $\lambda=1.139$
+and one with the strongest loss aversion, $\lambda=1.454$.
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.25\textwidth}
+\scriptsize
+\textbf{Fit/diagnostics.}\\
+Log ML: $C=1$ -72,137; $C=2$ -71,677; $C=3$ -71,468.\\
+$C=1$ passes diagnostics; $C=2/3$ improve fit but have weak SMC diagnostics
+($\hat R_{\max}=2.08/2.28$, min ESS/chain $=1.3/1.2$).
+\end{minipage}
+
+\end{document}

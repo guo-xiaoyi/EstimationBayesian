@@ -3,7 +3,8 @@ CPT mixture log-likelihood wrapped as a PyTensor blackbox op.
 
 The model uses continuous, cluster-specific reference-point weights:
 
-    theta_k = [r, alpha, lamb, gamma/palpha, a1, a2, a3, delta]
+    theta_k = [discount params, alpha_plus, alpha_minus, lamb,
+               gamma/palpha, a1, a2, a3, delta]
     a_k     = [a1, a2, a3, a4] on the 4-simplex, one vector per cluster
 
 The likelihood marginalises over cluster assignments:
@@ -31,9 +32,11 @@ from pytensor.compile.ops import as_op
 
 import functions as f
 from GlobalSettings import (
+    GlobalDiscounting,
     GlobalPrelecBounds,
     GlobalPriorKsiIGAlpha,
     GlobalPriorKsiIGBeta,
+    GlobalQuasiHyperbolicBounds,
     GlobalRSQMode,
     GlobalTKBounds,
 )
@@ -47,33 +50,122 @@ _method = None
 _si_arr = None
 _ckey_groups = None
 _conditional_lottery_cache = None
+_BAD_LOGP = -1e300
 
 PARAM_NAMES = {
-    "prelec": ["r", "alpha", "lamb", "palpha", "a1", "a2", "a3", "delta"],
-    "tk": ["r", "alpha", "lamb", "gamma", "a1", "a2", "a3", "delta"],
+    "prelec": [
+        "r", "alpha_plus", "alpha_minus", "lamb", "palpha",
+        "a1", "a2", "a3", "delta",
+    ],
+    "tk": [
+        "r", "alpha_plus", "alpha_minus", "lamb", "gamma",
+        "a1", "a2", "a3", "delta",
+    ],
 }
 
 RP_COMPONENT_NAMES = ["SQ", "PA", "LE", "FE"]
 
 
-def get_free_bounds(method):
+def normalise_discounting(discounting=None):
+    """Return the canonical discounting key used for parameter layouts."""
+    raw = GlobalDiscounting if discounting is None else discounting
+    key = str(raw).strip().lower().replace("-", "_")
+    aliases = {
+        "exp": "exponential",
+        "hyp": "hyperbolic",
+        "quasihyperbolic": "quasi_hyperbolic",
+        "qh": "quasi_hyperbolic",
+        "beta_delta": "quasi_hyperbolic",
+    }
+    return aliases.get(key, key)
+
+
+def _normalise_method(method):
+    key = str(method).strip().lower()
+    if key not in {"tk", "prelec"}:
+        raise ValueError(f"Unknown method: {method!r}")
+    return key
+
+
+def get_discounting_param_names(discounting=None):
+    discounting = normalise_discounting(discounting)
+    if discounting in {"exponential", "hyperbolic"}:
+        return ["r"]
+    if discounting == "quasi_hyperbolic":
+        return ["beta_qh", "delta_qh"]
+    raise ValueError(f"Unknown discounting method: {discounting!r}")
+
+
+def get_free_param_names(method, discounting=None):
+    """Names for theta_rest, excluding simplex reference-point weights."""
+    method = _normalise_method(method)
+    probability_param = "palpha" if method == "prelec" else "gamma"
+    return (
+        get_discounting_param_names(discounting)
+        + ["alpha_plus", "alpha_minus", "lamb", probability_param, "delta"]
+    )
+
+
+def get_pre_rp_param_count(method, discounting=None):
+    """Number of theta_rest columns that appear before a1/a2/a3 in theta."""
+    _normalise_method(method)
+    return len(get_discounting_param_names(discounting)) + 4
+
+
+def get_param_names(method, discounting=None):
+    """Names for sampled theta columns, excluding the implicit a4."""
+    names = get_free_param_names(method, discounting)
+    split = get_pre_rp_param_count(method, discounting)
+    return names[:split] + ["a1", "a2", "a3"] + names[split:]
+
+
+def get_full_param_names(method, discounting=None):
+    """Names after inserting Prelec's fixed probability-weight beta=1."""
+    names = get_param_names(method, discounting)
+    if _normalise_method(method) == "prelec":
+        insert_at = len(get_discounting_param_names(discounting)) + 3
+        names = names[:insert_at] + ["beta"] + names[insert_at:]
+    return names
+
+
+def get_free_bounds(method, discounting=None):
     """
-    Bounds for non-simplex structural params: [r, alpha, lamb, gamma/palpha, delta].
+    Bounds for non-simplex structural params:
+    [discount params, alpha_plus, alpha_minus, lamb, gamma/palpha, delta].
     Reference-point weights are handled by a Dirichlet prior over a_weights.
     """
+    method = _normalise_method(method)
+    discounting = normalise_discounting(discounting)
+    if discounting in {"exponential", "hyperbolic"}:
+        discount_bounds = None
+    elif discounting == "quasi_hyperbolic":
+        discount_bounds = list(GlobalQuasiHyperbolicBounds)
+    else:
+        raise ValueError(f"Unknown discounting method: {discounting!r}")
+
     if method == "prelec":
         b = GlobalPrelecBounds
-        return [b[0], b[1], b[2], b[4], b[8]]
+        base = [b[1], b[2], b[3], b[5], b[9]]
+        return ([b[0]] if discount_bounds is None else discount_bounds) + base
 
     b = GlobalTKBounds
-    return [b[0], b[1], b[2], b[3], b[7]]
+    base = [b[1], b[2], b[3], b[4], b[8]]
+    return ([b[0]] if discount_bounds is None else discount_bounds) + base
 
 
-def _free_to_full(params_free, method):
-    """Insert fixed beta=1 at position 3 for Prelec; TK passes through."""
-    if method == "prelec":
-        return np.concatenate([params_free[:3], [1.0], params_free[3:]])
-    return params_free
+def _free_to_full(params_free, method, discounting=None):
+    """Insert fixed probability-weight beta=1 for Prelec; TK passes through."""
+    method = _normalise_method(method)
+    if method != "prelec":
+        return params_free
+
+    free_names = get_param_names(method, discounting)
+    full_names = get_full_param_names(method, discounting)
+    values = dict(zip(free_names, params_free))
+    return np.array(
+        [1.0 if name == "beta" else values[name] for name in full_names],
+        dtype=float,
+    )
 
 
 def setup_likelihood(preproc, lotteries, subjects, method, C, K=None):
@@ -155,19 +247,26 @@ def _compute_ce_th(params, method, EL_arr, EL_fe_arr, EL_c1_arr,
     """
     Compute theoretical CEs for all observations under one cluster's parameters.
 
-    TK params:
-        [r, alpha, lamb, gamma, a1, a2, a3, delta]
-    Prelec params:
-        [r, alpha, lamb, beta, palpha, a1, a2, a3, delta]
+    Parameter names are generated from the CPT method and GlobalDiscounting.
+    Prelec's probability-weight beta is fixed to 1 and inserted by _free_to_full.
     """
-    if method == "tk":
-        r, alpha, lamb, gamma, a1, a2, a3, delta = params[:8]
-        beta, palpha = 1, 1
-    elif method == "prelec":
-        r, alpha, lamb, beta, palpha, a1, a2, a3, delta = params[:9]
-        gamma = 0.61
-    else:
-        raise ValueError(f"Unknown method: {method!r}")
+    method = _normalise_method(method)
+    names = get_full_param_names(method)
+    values = dict(zip(names, params[:len(names)]))
+
+    r = values.get("r", 0.0)
+    beta_qh = values.get("beta_qh", 1.0)
+    delta_qh = values.get("delta_qh")
+    alpha_plus = values["alpha_plus"]
+    alpha_minus = values["alpha_minus"]
+    lamb = values["lamb"]
+    gamma = values.get("gamma", 0.61)
+    beta = values.get("beta", 1.0)
+    palpha = values.get("palpha", 1.0)
+    a1 = values["a1"]
+    a2 = values["a2"]
+    a3 = values["a3"]
+    delta = values["delta"]
 
     a4 = max(0.0, 1.0 - a1 - a2 - a3)
 
@@ -194,15 +293,25 @@ def _compute_ce_th(params, method, EL_arr, EL_fe_arr, EL_c1_arr,
         ev = f.evaluation(
             r=r,
             R=rl,
-            alpha=alpha,
+            alpha_plus=alpha_plus,
+            alpha_minus=alpha_minus,
             lamb=lamb,
             gamma=gamma,
             lotteries={lid: conditioned_lottery},
             method=method,
             beta=beta,
             palpha=palpha,
+            discounting=GlobalDiscounting,
+            beta_qh=beta_qh,
+            delta_qh=delta_qh,
         )
-        ce_th_base[idx] = f.u_inv(ev[lid]["V"], rl, alpha, lamb)
+        ce_th_base[idx] = f.u_inv(
+            ev[lid]["V"],
+            rl,
+            lamb=lamb,
+            alpha_plus=alpha_plus,
+            alpha_minus=alpha_minus,
+        )
 
     return ce_th_base - Zt_arr
 
@@ -280,7 +389,8 @@ def _compute_ll_numpy(theta, pi, ksi):
     """
     Pure NumPy CPT mixture log-likelihood.
 
-    theta : (C, 8) cluster params [r, alpha, lamb, gamma/palpha, a1, a2, a3, delta]
+    theta : (C, 9) cluster params
+            [r, alpha_plus, alpha_minus, lamb, gamma/palpha, a1, a2, a3, delta]
     pi    : (C,) cluster mixing weights
     ksi   : (N,) subject-level noise multipliers
     """
@@ -300,7 +410,11 @@ def _compute_ll_numpy(theta, pi, ksi):
             t_arr, Z1_arr, Z2_arr, Zt_arr,
             _lotteries, y_proc,
         )
+        if not np.all(np.isfinite(ce_th)):
+            log_l[:, k] = _BAD_LOGP
+            continue
         log_pdf = norm.logpdf(obs_arr, loc=ce_th, scale=sig_arr)
+        log_pdf = np.nan_to_num(log_pdf, nan=_BAD_LOGP, neginf=_BAD_LOGP, posinf=_BAD_LOGP)
         np.add.at(log_l[:, k], si_arr, log_pdf)
 
     log_pi = np.log(np.clip(pi, 1e-300, None))
@@ -361,9 +475,18 @@ def compute_marginal_ksi_subject_loglik(
             t_arr, Z1_arr, Z2_arr, Zt_arr,
             lotteries, y_proc,
         )
+        if not np.all(np.isfinite(ce_th)):
+            log_l[:, k] = _BAD_LOGP
+            continue
         scaled_resid_sq = ((obs_arr - ce_th) / spread_arr) ** 2
         q = np.bincount(si_arr, weights=scaled_resid_sq, minlength=n_subjects)
         log_l[:, k] = base - posterior_shape * np.log(beta + 0.5 * q)
+        log_l[:, k] = np.nan_to_num(
+            log_l[:, k],
+            nan=_BAD_LOGP,
+            neginf=_BAD_LOGP,
+            posinf=_BAD_LOGP,
+        )
 
     return log_l
 

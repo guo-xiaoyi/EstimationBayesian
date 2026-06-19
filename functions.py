@@ -8,7 +8,7 @@ from lotteries import lotteries, one, lotteries_full
 
 # Some ex ante fixed parameters
 
-r, alpha, lamb, gamma, R, desired = 0.97, 0.88, 2.25, 0.61, 0, "lottery_3"
+r, alpha, lamb, gamma, R, desired = 0.97, 0.001, 2.25, 0.61, 0, "lottery_3"
 
 
 # Probability weighting function
@@ -32,57 +32,116 @@ def pw(p, gamma=0.61, beta=1, alpha=1, method = "tk"):
 
 
 
-# Exponential discounting
+# Temporal discounting
 
-def rho(t, r=0.97):
+def rho(t, r=0.97, discounting="hyperbolic", beta_qh=1.0, delta_qh=None):
+    method = str(discounting).lower()
 
-    return math.exp(- r * t)
+    if method in {"exponential", "exp"}:
+        return math.exp(-r * t)
+    if method in {"hyperbolic", "hyp"}:
+        denom = 1.0 + r * t
+        if denom <= 0:
+            raise ValueError("Hyperbolic discounting requires 1 + r*t > 0.")
+        return 1.0 / denom
+    if method in {
+        "quasi_hyperbolic",
+        "quasi-hyperbolic",
+        "quasihyperbolic",
+        "qh",
+        "beta_delta",
+        "beta-delta",
+    }:
+        if t == 0:
+            return 1.0
+        if not (0.0 < beta_qh <= 1.0):
+            raise ValueError("Quasi-hyperbolic beta_qh must be in (0, 1].")
+        delta = math.exp(-r) if delta_qh is None else float(delta_qh)
+        if not (0.0 < delta <= 1.0):
+            raise ValueError("Quasi-hyperbolic delta_qh must be in (0, 1].")
+        return beta_qh * (delta ** t)
+    raise ValueError(f"Unknown discounting method: {discounting!r}")
 
 
+def _resolve_utility_alphas(alpha=0.001, alpha_plus=None, alpha_minus=None):
+    base = 0.001 if alpha is None else alpha
+    return (
+        base if alpha_plus is None else alpha_plus,
+        base if alpha_minus is None else alpha_minus,
+    )
 
-# Power utility function with loss aversion, with respect to a reference point R
 
-def u(x, R=0, alpha=0.88, lamb=2.25):
+def _validate_cara_params(alpha_plus, alpha_minus, lamb):
+    if alpha_plus <= 0 or alpha_minus <= 0:
+        raise ValueError("CARA coefficients alpha_plus and alpha_minus must be positive.")
+    if lamb <= 0:
+        raise ValueError("Loss aversion parameter lamb must be positive.")
 
-    if x >= R:
 
-        return (x - R) ** (alpha)
+# CARA utility function with loss aversion, with respect to a reference point R
 
-    else:
+def u(x, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None):
+    """
+    Piecewise CARA utility around reference point R.
 
-        return - lamb * ((-x + R) ** alpha) 
+    alpha_plus and alpha_minus are absolute risk-aversion coefficients for
+    gains and losses. lamb scales the loss branch, preserving loss aversion.
+    """
+
+    alpha_plus, alpha_minus = _resolve_utility_alphas(alpha, alpha_plus, alpha_minus)
+    _validate_cara_params(alpha_plus, alpha_minus, lamb)
+    z = x - R
+
+    if z >= 0:
+
+        return -math.expm1(-alpha_plus * z) / alpha_plus
+
+    return -lamb * math.expm1(alpha_minus * (-z)) / alpha_minus
     
 
 
-# Inverse of the power utility function with loss aversion with respect to a reference point R
+# Inverse of the CARA utility function with loss aversion with respect to R
 
 
-def u_inv(y, R=0, alpha=0.88, lamb=2.25): 
+def u_inv(y, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None):
     """
-    The inverse of the power utility function with loss aversion with respect to a reference point R.
+    The inverse of piecewise CARA utility with loss aversion.
     """
+    alpha_plus, alpha_minus = _resolve_utility_alphas(alpha, alpha_plus, alpha_minus)
+    _validate_cara_params(alpha_plus, alpha_minus, lamb)
 
     if y >= 0:
-        return y ** (1/(alpha)) + R
+        domain = 1.0 - alpha_plus * y
+        if domain <= 0:
+            return math.inf
+        return R - math.log(domain) / alpha_plus
 
-    if y < 0:
-
-        return -(-y/lamb) ** (1/alpha) + R
+    return R - math.log1p(-alpha_minus * y / lamb) / alpha_minus
     
 
 
 # Present value of an outcome stream, outcome stream is a list
 
-def PV(o, r=0.97, R=0, alpha=0.88, lamb=2.25):
+def PV(
+        o, r=0.97, R=0, alpha=0.001, lamb=2.25,
+        discounting="hyperbolic", alpha_plus=None, alpha_minus=None,
+        beta_qh=1.0, delta_qh=None
+        ):
 
     s = 0
 
     for i in range(len(o)):
 
-        s = s + rho(i, r)*o[i]
+        s = s + rho(
+            i,
+            r,
+            discounting,
+            beta_qh=beta_qh,
+            delta_qh=delta_qh,
+        ) * o[i]
 
 
-    return u(s, R, alpha, lamb)
+    return u(s, R, alpha, lamb, alpha_plus=alpha_plus, alpha_minus=alpha_minus)
 
 
 
@@ -148,7 +207,10 @@ def dw(l, gamma=0.61, beta=1, palpha=1, method="tk"):
 
 # Value function, taking the list of present values and the list of physical proababilities as well as all the parameters
 
-def V(pvl, p, r=0.97, gamma=0.61, alpha=0.88, lamb=2.25, R=0, method="tk", beta=1, palpha=1):
+def V(
+        pvl, p, r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
+        method="tk", beta=1, palpha=1, alpha_plus=None, alpha_minus=None
+        ):
     """
     Compute the CPT value of a lottery given the present values of its outcome streams and their probabilities.
     Using the decision weights from dw(), and order the outcome streams by PV, then do the weighted sum.
@@ -270,8 +332,9 @@ def transform2(lotteries):
 
 
 def evaluation(
-        r=0.97, R=0, alpha=0.88, lamb=2.25, gamma=0.61, lotteries=transform(lotteries_full),
-        beta=1, palpha=1, method="tk"
+        r=0.97, R=0, alpha=0.001, lamb=2.25, gamma=0.61, lotteries=transform(lotteries_full),
+        beta=1, palpha=1, method="tk", discounting="hyperbolic",
+        alpha_plus=None, alpha_minus=None, beta_qh=1.0, delta_qh=None
         ):
     
     lotteries_v2 = {}
@@ -304,7 +367,18 @@ def evaluation(
 
             o = list(*path.values())
 
-            pv_outcome = PV(o, r, R, alpha, lamb)
+            pv_outcome = PV(
+                o,
+                r=r,
+                R=R,
+                alpha=alpha,
+                lamb=lamb,
+                discounting=discounting,
+                alpha_plus=alpha_plus,
+                alpha_minus=alpha_minus,
+                beta_qh=beta_qh,
+                delta_qh=delta_qh,
+            )
 
             b[j] = [p, pv_outcome]
 
@@ -314,7 +388,20 @@ def evaluation(
 
         a["PV"] = b
 
-        a["V"] = V(pvl,prob, r, gamma, alpha, lamb, R, method=method, beta=beta, palpha=palpha)
+        a["V"] = V(
+            pvl,
+            prob,
+            r,
+            gamma,
+            alpha,
+            lamb,
+            R,
+            method=method,
+            beta=beta,
+            palpha=palpha,
+            alpha_plus=alpha_plus,
+            alpha_minus=alpha_minus,
+        )
 
         a["present_values_of_streams"] = pvl
 
@@ -347,27 +434,89 @@ def realized_zt( period1_label=None, period2_label=None):
 # Z_t is the cumulative discounted payoff already realised; defaults to 0 (session 1).
 # Formula: ce = v^{-1}(V(L_j)) - Z_t
 
-def ce(r=0.97, gamma=0.61, alpha=0.88, lamb=2.25, R=0, desired=desired, lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1, Z_t=0):
+def ce(
+        r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
+        desired=desired, lotteries=transform(lotteries_full), method="tk",
+        beta=1, palpha=1, Z_t=0, discounting="hyperbolic",
+        alpha_plus=None, alpha_minus=None, beta_qh=1.0, delta_qh=None
+        ):
 
     # Pass through all parameters so CE is computed at the current candidate point.
-    evaluated_lotteries = evaluation(r=r, R=R, alpha=alpha, lamb=lamb, gamma=gamma, lotteries=lotteries, method=method, beta=beta, palpha=palpha)
+    evaluated_lotteries = evaluation(
+        r=r,
+        R=R,
+        alpha=alpha,
+        lamb=lamb,
+        gamma=gamma,
+        lotteries=lotteries,
+        method=method,
+        beta=beta,
+        palpha=palpha,
+        discounting=discounting,
+        alpha_plus=alpha_plus,
+        alpha_minus=alpha_minus,
+        beta_qh=beta_qh,
+        delta_qh=delta_qh,
+    )
 
     l = evaluated_lotteries[desired]
 
     v = l["V"]
 
-    return u_inv(v, R, alpha, lamb) - Z_t
+    return u_inv(
+        v,
+        R,
+        alpha,
+        lamb,
+        alpha_plus=alpha_plus,
+        alpha_minus=alpha_minus,
+    ) - Z_t
 
 
 
-def ce_dict(r=0.97, gamma=0.61, alpha=0.88, lamb=2.25, R=0, lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1):
+def ce_dict(
+        r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
+        lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1,
+        discounting="hyperbolic", alpha_plus=None, alpha_minus=None,
+        beta_qh=1.0, delta_qh=None
+        ):
     """Return v^{-1}(V(L_j)) per lottery, without Z_t (base values for session 1)."""
-    evaluated_lotteries = evaluation(r=r, R=R, alpha=alpha, lamb=lamb, gamma=gamma, lotteries=lotteries, method=method, beta=beta, palpha=palpha)
+    evaluated_lotteries = evaluation(
+        r=r,
+        R=R,
+        alpha=alpha,
+        lamb=lamb,
+        gamma=gamma,
+        lotteries=lotteries,
+        method=method,
+        beta=beta,
+        palpha=palpha,
+        discounting=discounting,
+        alpha_plus=alpha_plus,
+        alpha_minus=alpha_minus,
+        beta_qh=beta_qh,
+        delta_qh=delta_qh,
+    )
 
-    return {i: u_inv(evaluated_lotteries[i]["V"], R, alpha, lamb) for i in lotteries}
+    return {
+        i: u_inv(
+            evaluated_lotteries[i]["V"],
+            R,
+            alpha,
+            lamb,
+            alpha_plus=alpha_plus,
+            alpha_minus=alpha_minus,
+        )
+        for i in lotteries
+    }
 
 
-def ce_th_series(y, r=0.97, gamma=0.61, alpha=0.88, lamb=2.25, R=0, lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1):
+def ce_th_series(
+        y, r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
+        lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1,
+        discounting="hyperbolic", alpha_plus=None, alpha_minus=None,
+        beta_qh=1.0, delta_qh=None
+        ):
     """
     Return a Series of theoretical CEs aligned with rows of y,
     with Z_t already subtracted per row.
@@ -375,7 +524,22 @@ def ce_th_series(y, r=0.97, gamma=0.61, alpha=0.88, lamb=2.25, R=0, lotteries=tr
     round == 17 : session 2, Z_t = period-1 payoff
     round == 18 : session 3, Z_t = period-1 + period-2 payoff
     """
-    base = ce_dict(r, gamma, alpha, lamb, R, lotteries=lotteries, method=method, beta=beta, palpha=palpha)
+    base = ce_dict(
+        r,
+        gamma,
+        alpha,
+        lamb,
+        R,
+        lotteries=lotteries,
+        method=method,
+        beta=beta,
+        palpha=palpha,
+        discounting=discounting,
+        alpha_plus=alpha_plus,
+        alpha_minus=alpha_minus,
+        beta_qh=beta_qh,
+        delta_qh=delta_qh,
+    )
     zt = y.apply(
         lambda row: realized_zt(
             period1_label=row["realized_period1_label"] if row["round_number"] in (17, 18) else None,
