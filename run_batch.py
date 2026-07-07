@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent
 
 ENV_KEYS = {
     "method": "EB_GLOBAL_METHOD",
+    "utility": "EB_GLOBAL_UTILITY",
     "discounting": "EB_GLOBAL_DISCOUNTING",
     "clusters": "EB_GLOBAL_CLUSTER",
     "draws": "EB_GLOBAL_DRAWS",
@@ -30,6 +31,8 @@ ENV_KEYS = {
     "ksi_mode": "EB_GLOBAL_KSI_MODE",
     "prior_dirichlet": "EB_GLOBAL_PRIOR_DIRICHLET",
     "prior_dirichlet_rp": "EB_GLOBAL_PRIOR_DIRICHLET_RP",
+    "fixed_reference_point": "EB_GLOBAL_FIXED_REFERENCE_POINT",
+    "fixed_reference_weights": "EB_GLOBAL_FIXED_REFERENCE_WEIGHTS",
     "prior_ksi_sigma": "EB_GLOBAL_PRIOR_KSI_SIGMA",
     "fixed_ksi": "EB_GLOBAL_FIXED_KSI",
     "prior_ksi_ig_alpha": "EB_GLOBAL_PRIOR_KSI_IG_ALPHA",
@@ -127,18 +130,22 @@ def _delta_bounds_label(job):
 
 def _default_name(job):
     method = job.get("method", "method")
+    utility = str(job.get("utility", "cara")).lower().replace("-", "_")
     discounting = job.get("discounting", "discount")
     clusters = int(job.get("clusters", 0))
     ksi_mode = job.get("ksi_mode", "ksi")
     lottery_label = _lottery_label(job)
     delta_label = _delta_bounds_label(job)
     delta_part = f"_delta-{delta_label}" if delta_label else ""
+    utility_part = "" if utility in {"", "cara"} else f"_utility-{_slugify(utility)}"
+    rp_label = job.get("fixed_reference_point") or job.get("fixed_reference_weights")
+    rp_part = f"_rp-{_slugify(rp_label)}" if rp_label else ""
     draws = job.get("draws", "draws")
     chains = job.get("chains", "chains")
     seed = job.get("seed", "seed")
     return (
-        f"{method}_{discounting}_C{clusters:02d}_lotteries-{lottery_label}_"
-        f"ksi-{ksi_mode}{delta_part}_d{draws}_ch{chains}_s{seed}"
+        f"{method}_{discounting}{utility_part}_C{clusters:02d}_lotteries-{lottery_label}_"
+        f"ksi-{ksi_mode}{delta_part}{rp_part}_d{draws}_ch{chains}_s{seed}"
     )
 
 

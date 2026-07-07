@@ -11,3 +11,4 @@ pilot.xlsx
 *.pyc
 *.txt
 /batch_outputs/
+/single_reference_outputs/

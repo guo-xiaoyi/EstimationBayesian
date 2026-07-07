@@ -4,6 +4,7 @@ cluster-specific reference-point weights.
 """
 
 import os
+import re
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 _pytensor_flags = os.environ.get("PYTENSOR_FLAGS", "")
@@ -366,8 +367,47 @@ def check_convergence(idata, method, C):
     return pd.DataFrame(rows)
 
 
+def _safe_plot_name(value):
+    name = re.sub(r"[^A-Za-z0-9_.=-]+", "-", str(value)).strip("-._")
+    return name or "param"
+
+
+def _hist_on_axis(ax, values, title, color):
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        ax.text(0.5, 0.5, "no finite draws", ha="center", va="center")
+    elif np.isclose(finite.min(), finite.max()):
+        value = float(finite[0])
+        span = max(abs(value) * 0.01, 0.01)
+        ax.axvline(value, color=color, linewidth=2)
+        ax.set_xlim(value - span, value + span)
+        ax.set_yticks([])
+    else:
+        ax.hist(
+            finite,
+            bins=50,
+            density=True,
+            alpha=0.7,
+            color=color,
+            edgecolor="none",
+        )
+    ax.set_title(title, fontsize=8)
+    ax.tick_params(labelsize=7)
+
+
+def _save_single_hist(values, path, title, color):
+    fig, ax = plt.subplots(figsize=(4.2, 2.8))
+    _hist_on_axis(ax, values, title, color)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
 def plot_posteriors(idata, output_dir="outputs/plots", method="tk"):
     os.makedirs(output_dir, exist_ok=True)
+    individual_dir = os.path.join(output_dir, "posterior_individual")
+    os.makedirs(individual_dir, exist_ok=True)
 
     trace_vars = ["theta", "a_weights"]
     if idata.posterior["pi"].shape[-1] > 1:
@@ -384,20 +424,50 @@ def plot_posteriors(idata, output_dir="outputs/plots", method="tk"):
         print(f"  Plot saved -> {path}")
 
     theta = idata.posterior["theta"].values
+    a_weights = idata.posterior["a_weights"].values
     _, _, C, P = theta.shape
     theta_flat = theta.reshape(-1, C, P)
-    names = get_param_names(method)
+    a_flat = a_weights.reshape(-1, C, 4)
+    posterior_flat = np.concatenate([theta_flat, a_flat[:, :, 3:4]], axis=2)
+    names = get_param_names(method) + ["a4"]
 
-    fig, axes = plt.subplots(P, C, figsize=(4 * C, 2 * P), squeeze=False)
+    fig, axes = plt.subplots(len(names), C, figsize=(4 * C, 2 * len(names)), squeeze=False)
     for k in range(C):
         for j, name in enumerate(names):
             ax = axes[j][k]
-            ax.hist(theta_flat[:, k, j], bins=50, density=True, alpha=0.7,
-                    color=f"C{k}", edgecolor="none")
-            ax.set_title(f"Cluster {k} - {name}", fontsize=8)
-            ax.tick_params(labelsize=7)
+            values = posterior_flat[:, k, j]
+            title = f"Cluster {k} - {name}"
+            _hist_on_axis(ax, values, title, color=f"C{k}")
+            single_path = os.path.join(
+                individual_dir,
+                f"posterior_cluster-{k}_{_safe_plot_name(name)}.png",
+            )
+            _save_single_hist(values, single_path, title, color=f"C{k}")
     fig.tight_layout()
     path = os.path.join(output_dir, "posterior_theta.png")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"  Plot saved -> {path}")
+
+    ref_labels = [
+        ("SQ", "a1"),
+        ("PA", "a2"),
+        ("LE", "a3"),
+        ("FE", "a4"),
+    ]
+    fig, axes = plt.subplots(4, C, figsize=(4 * C, 8), squeeze=False)
+    for k in range(C):
+        for j, (component, a_name) in enumerate(ref_labels):
+            values = a_flat[:, k, j]
+            title = f"Cluster {k} - {component} ({a_name})"
+            _hist_on_axis(axes[j][k], values, title, color=f"C{k}")
+            single_path = os.path.join(
+                individual_dir,
+                f"posterior_cluster-{k}_reference-{component.lower()}-{a_name}.png",
+            )
+            _save_single_hist(values, single_path, title, color=f"C{k}")
+    fig.tight_layout()
+    path = os.path.join(output_dir, "posterior_reference_weights.png")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     print(f"  Plot saved -> {path}")

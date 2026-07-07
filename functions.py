@@ -78,38 +78,80 @@ def _validate_cara_params(alpha_plus, alpha_minus, lamb):
         raise ValueError("Loss aversion parameter lamb must be positive.")
 
 
-# CARA utility function with loss aversion, with respect to a reference point R
+def normalise_utility(utility="cara"):
+    key = str(utility).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "cara": "cara",
+        "exponential": "cara",
+        "exp": "cara",
+        "power": "power",
+        "power_utility": "power",
+        "crra": "power",
+    }
+    if key not in aliases:
+        raise ValueError(f"Unknown utility function: {utility!r}")
+    return aliases[key]
 
-def u(x, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None):
+
+def _validate_power_params(alpha_plus, alpha_minus, lamb):
+    if alpha_plus <= 0 or alpha_minus <= 0:
+        raise ValueError("Power utility exponents alpha_plus and alpha_minus must be positive.")
+    if lamb <= 0:
+        raise ValueError("Loss aversion parameter lamb must be positive.")
+
+
+# Utility function with loss aversion, with respect to a reference point R
+
+def u(
+        x, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None,
+        utility="cara"
+        ):
     """
-    Piecewise CARA utility around reference point R.
+    Piecewise utility around reference point R.
 
-    alpha_plus and alpha_minus are absolute risk-aversion coefficients for
-    gains and losses. lamb scales the loss branch, preserving loss aversion.
+    For utility="cara", alpha_plus and alpha_minus are absolute risk-aversion
+    coefficients. For utility="power", they are gain/loss power exponents.
+    lamb scales the loss branch, preserving loss aversion.
     """
 
     alpha_plus, alpha_minus = _resolve_utility_alphas(alpha, alpha_plus, alpha_minus)
-    _validate_cara_params(alpha_plus, alpha_minus, lamb)
+    utility = normalise_utility(utility)
     z = x - R
 
-    if z >= 0:
+    if utility == "power":
+        _validate_power_params(alpha_plus, alpha_minus, lamb)
+        if z >= 0:
+            return z ** alpha_plus
+        return -lamb * ((-z) ** alpha_minus)
 
+    _validate_cara_params(alpha_plus, alpha_minus, lamb)
+    if z >= 0:
         return -math.expm1(-alpha_plus * z) / alpha_plus
 
     return -lamb * math.expm1(alpha_minus * (-z)) / alpha_minus
     
 
 
-# Inverse of the CARA utility function with loss aversion with respect to R
+# Inverse utility function with loss aversion with respect to R
 
 
-def u_inv(y, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None):
+def u_inv(
+        y, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None,
+        utility="cara"
+        ):
     """
-    The inverse of piecewise CARA utility with loss aversion.
+    The inverse of piecewise utility with loss aversion.
     """
     alpha_plus, alpha_minus = _resolve_utility_alphas(alpha, alpha_plus, alpha_minus)
-    _validate_cara_params(alpha_plus, alpha_minus, lamb)
+    utility = normalise_utility(utility)
 
+    if utility == "power":
+        _validate_power_params(alpha_plus, alpha_minus, lamb)
+        if y >= 0:
+            return R + y ** (1.0 / alpha_plus)
+        return R - ((-y) / lamb) ** (1.0 / alpha_minus)
+
+    _validate_cara_params(alpha_plus, alpha_minus, lamb)
     if y >= 0:
         domain = 1.0 - alpha_plus * y
         if domain <= 0:
@@ -125,7 +167,7 @@ def u_inv(y, R=0, alpha=0.001, lamb=2.25, alpha_plus=None, alpha_minus=None):
 def PV(
         o, r=0.97, R=0, alpha=0.001, lamb=2.25,
         discounting="hyperbolic", alpha_plus=None, alpha_minus=None,
-        beta_qh=1.0, delta_qh=None
+        beta_qh=1.0, delta_qh=None, utility="cara"
         ):
 
     s = 0
@@ -141,7 +183,15 @@ def PV(
         ) * o[i]
 
 
-    return u(s, R, alpha, lamb, alpha_plus=alpha_plus, alpha_minus=alpha_minus)
+    return u(
+        s,
+        R,
+        alpha,
+        lamb,
+        alpha_plus=alpha_plus,
+        alpha_minus=alpha_minus,
+        utility=utility,
+    )
 
 
 
@@ -334,7 +384,8 @@ def transform2(lotteries):
 def evaluation(
         r=0.97, R=0, alpha=0.001, lamb=2.25, gamma=0.61, lotteries=transform(lotteries_full),
         beta=1, palpha=1, method="tk", discounting="hyperbolic",
-        alpha_plus=None, alpha_minus=None, beta_qh=1.0, delta_qh=None
+        alpha_plus=None, alpha_minus=None, beta_qh=1.0, delta_qh=None,
+        utility="cara"
         ):
     
     lotteries_v2 = {}
@@ -378,6 +429,7 @@ def evaluation(
                 alpha_minus=alpha_minus,
                 beta_qh=beta_qh,
                 delta_qh=delta_qh,
+                utility=utility,
             )
 
             b[j] = [p, pv_outcome]
@@ -438,7 +490,8 @@ def ce(
         r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
         desired=desired, lotteries=transform(lotteries_full), method="tk",
         beta=1, palpha=1, Z_t=0, discounting="hyperbolic",
-        alpha_plus=None, alpha_minus=None, beta_qh=1.0, delta_qh=None
+        alpha_plus=None, alpha_minus=None, beta_qh=1.0, delta_qh=None,
+        utility="cara"
         ):
 
     # Pass through all parameters so CE is computed at the current candidate point.
@@ -457,6 +510,7 @@ def ce(
         alpha_minus=alpha_minus,
         beta_qh=beta_qh,
         delta_qh=delta_qh,
+        utility=utility,
     )
 
     l = evaluated_lotteries[desired]
@@ -470,6 +524,7 @@ def ce(
         lamb,
         alpha_plus=alpha_plus,
         alpha_minus=alpha_minus,
+        utility=utility,
     ) - Z_t
 
 
@@ -478,7 +533,7 @@ def ce_dict(
         r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
         lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1,
         discounting="hyperbolic", alpha_plus=None, alpha_minus=None,
-        beta_qh=1.0, delta_qh=None
+        beta_qh=1.0, delta_qh=None, utility="cara"
         ):
     """Return v^{-1}(V(L_j)) per lottery, without Z_t (base values for session 1)."""
     evaluated_lotteries = evaluation(
@@ -496,6 +551,7 @@ def ce_dict(
         alpha_minus=alpha_minus,
         beta_qh=beta_qh,
         delta_qh=delta_qh,
+        utility=utility,
     )
 
     return {
@@ -506,6 +562,7 @@ def ce_dict(
             lamb,
             alpha_plus=alpha_plus,
             alpha_minus=alpha_minus,
+            utility=utility,
         )
         for i in lotteries
     }
@@ -515,7 +572,7 @@ def ce_th_series(
         y, r=0.97, gamma=0.61, alpha=0.001, lamb=2.25, R=0,
         lotteries=transform(lotteries_full), method="tk", beta=1, palpha=1,
         discounting="hyperbolic", alpha_plus=None, alpha_minus=None,
-        beta_qh=1.0, delta_qh=None
+        beta_qh=1.0, delta_qh=None, utility="cara"
         ):
     """
     Return a Series of theoretical CEs aligned with rows of y,
@@ -539,6 +596,7 @@ def ce_th_series(
         alpha_minus=alpha_minus,
         beta_qh=beta_qh,
         delta_qh=delta_qh,
+        utility=utility,
     )
     zt = y.apply(
         lambda row: realized_zt(

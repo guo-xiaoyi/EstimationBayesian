@@ -45,6 +45,7 @@ from GlobalSettings import (
     GlobalPriorMu0,
     GlobalPriorMu0ByName,
     GlobalFixedKsi,
+    GlobalFixedReferenceWeights,
     GlobalKsiMode,
     GlobalProgressBar,
     GlobalSMCCores,
@@ -165,12 +166,22 @@ def build_model(subjects, method, C, K=None):
                 pt.ones((C, len(lower_rest))) * lower_rest,
             )
 
-        # One continuous reference-point weight vector per cluster.
-        a_weights = pm.Dirichlet(
-            "a_weights",
-            a=np.ones(4) * GlobalPriorDirichletRP,
-            shape=(C, 4),
-        )
+        # One reference-point weight vector per cluster. By default this is
+        # estimated; sensitivity runs can fix it to a single canonical point.
+        if GlobalFixedReferenceWeights is None:
+            a_weights = pm.Dirichlet(
+                "a_weights",
+                a=np.ones(4) * GlobalPriorDirichletRP,
+                shape=(C, 4),
+            )
+        else:
+            fixed_weights = pt.as_tensor_variable(
+                np.asarray(GlobalFixedReferenceWeights, dtype=float)
+            )
+            a_weights = pm.Deterministic(
+                "a_weights",
+                pt.ones((C, 1)) * fixed_weights[None, :],
+            )
 
         theta = pm.Deterministic(
             "theta",
@@ -234,6 +245,16 @@ def _as_float_sequence(value):
         return np.array([], dtype=float)
 
 
+def _last_finite_or_last(values):
+    values = np.asarray(values, dtype=float).ravel()
+    if not len(values):
+        return np.nan
+    finite = values[np.isfinite(values)]
+    if len(finite):
+        return finite[-1]
+    return values[-1]
+
+
 def _netcdf_safe_idata(idata):
     """Pad ragged SMC stage-diagnostic arrays so NetCDF can serialise them."""
     if not hasattr(idata, "sample_stats"):
@@ -270,7 +291,7 @@ def _netcdf_safe_idata(idata):
         values_flat = values.reshape(-1)
         for i, seq in enumerate(sequences):
             if len(seq):
-                values_flat[i] = seq[0]
+                values_flat[i] = _last_finite_or_last(seq)
         da_coords = {dim: da.coords[dim] for dim in da.dims if dim in da.coords}
         return xr.DataArray(values, dims=da.dims, coords=da_coords, attrs=da.attrs)
 
@@ -308,7 +329,7 @@ def _netcdf_safe_idata(idata):
             elif n_chains and len(seqs) % n_chains == 0:
                 n_stages = len(seqs) // n_chains
                 values = np.array(
-                    [seq[0] if len(seq) else np.nan for seq in seqs],
+                    [_last_finite_or_last(seq) for seq in seqs],
                     dtype=float,
                 ).reshape(n_chains, n_stages)
                 _add_stage_var(name, "chain", list(values), da.attrs)

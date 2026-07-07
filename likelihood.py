@@ -39,6 +39,7 @@ from GlobalSettings import (
     GlobalQuasiHyperbolicBounds,
     GlobalRSQMode,
     GlobalTKBounds,
+    GlobalUtility,
 )
 
 # Module-level state set by setup_likelihood().
@@ -304,6 +305,7 @@ def _compute_ce_th(params, method, EL_arr, EL_fe_arr, EL_c1_arr,
             discounting=GlobalDiscounting,
             beta_qh=beta_qh,
             delta_qh=delta_qh,
+            utility=GlobalUtility,
         )
         ce_th_base[idx] = f.u_inv(
             ev[lid]["V"],
@@ -311,6 +313,7 @@ def _compute_ce_th(params, method, EL_arr, EL_fe_arr, EL_c1_arr,
             lamb=lamb,
             alpha_plus=alpha_plus,
             alpha_minus=alpha_minus,
+            utility=GlobalUtility,
         )
 
     return ce_th_base - Zt_arr

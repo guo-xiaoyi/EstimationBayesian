@@ -46,11 +46,88 @@ def _env_float_pair(name, default):
     return (lower, upper)
 
 
+def _env_float_vector(name, default):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    return np.array([float(part) for part in parts], dtype=float)
+
+
 def _env_bool(name, default):
     value = os.environ.get(name)
     if value in (None, ""):
         return default
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _reference_point_setting():
+    names = ("SQ", "PA", "LE", "FE")
+    aliases = {
+        "SQ": "SQ",
+        "STATUS_QUO": "SQ",
+        "STATUS-QUO": "SQ",
+        "PA": "PA",
+        "PARTIAL_ADAPTATION": "PA",
+        "PARTIAL-ADAPTATION": "PA",
+        "ADAPTATION": "PA",
+        "LE": "LE",
+        "LAGGED_EXPECTATION": "LE",
+        "LAGGED-EXPECTATION": "LE",
+        "FE": "FE",
+        "FORWARD_EXPECTATION": "FE",
+        "FORWARD-EXPECTATION": "FE",
+    }
+
+    fixed_name = _env_str("EB_GLOBAL_FIXED_REFERENCE_POINT", "").strip()
+    fixed_weights = _env_float_vector("EB_GLOBAL_FIXED_REFERENCE_WEIGHTS", None)
+    if fixed_name and fixed_weights is not None:
+        raise ValueError(
+            "Set only one of EB_GLOBAL_FIXED_REFERENCE_POINT or "
+            "EB_GLOBAL_FIXED_REFERENCE_WEIGHTS."
+        )
+
+    if fixed_name:
+        key = fixed_name.upper().replace(" ", "_")
+        if key not in aliases:
+            choices = ", ".join(names)
+            raise ValueError(
+                "EB_GLOBAL_FIXED_REFERENCE_POINT must be one of "
+                f"{choices}; got {fixed_name!r}."
+            )
+        label = aliases[key]
+        weights = np.zeros(4, dtype=float)
+        weights[names.index(label)] = 1.0
+        return label, weights
+
+    if fixed_weights is not None:
+        if fixed_weights.shape != (4,):
+            raise ValueError("EB_GLOBAL_FIXED_REFERENCE_WEIGHTS must contain four floats.")
+        if np.any(fixed_weights < 0):
+            raise ValueError("EB_GLOBAL_FIXED_REFERENCE_WEIGHTS cannot contain negatives.")
+        if not np.isclose(fixed_weights.sum(), 1.0):
+            raise ValueError("EB_GLOBAL_FIXED_REFERENCE_WEIGHTS must sum to 1.")
+        return "custom", fixed_weights
+
+    return None, None
+
+
+def _normalise_utility(value):
+    key = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "cara": "cara",
+        "exponential": "cara",
+        "exp": "cara",
+        "power": "power",
+        "power_utility": "power",
+        "crra": "power",
+    }
+    if key not in aliases:
+        raise ValueError(
+            "EB_GLOBAL_UTILITY must be one of 'cara' or 'power'; "
+            f"got {value!r}."
+        )
+    return aliases[key]
 
 # ── Lottery sets ───────────────────────────────────────────────────────────────
 import lotteries as _lot
@@ -87,6 +164,7 @@ def _select_lottery_set(name, ids_csv=None):
 GlobalLotterySetName = _env_str("EB_GLOBAL_LOTTERY_SET", "full")
 GlobalLotteryIdsCSV = _env_str("EB_GLOBAL_LOTTERY_IDS", "")
 GlobalLottery = _select_lottery_set(GlobalLotterySetName, GlobalLotteryIdsCSV)
+GlobalUtility = _normalise_utility(_env_str("EB_GLOBAL_UTILITY", "cara"))
 
 # ── Parameter bounds ───────────────────────────────────────────────────────────
 # Full CPT params per cluster:
@@ -94,9 +172,24 @@ GlobalLottery = _select_lottery_set(GlobalLotterySetName, GlobalLotteryIdsCSV)
 #   Prelec : [r, alpha_plus, alpha_minus, lamb, beta, palpha, a1, a2, a3, delta]
 #   Quasi-hyperbolic discounting replaces r with [beta_qh, delta_qh],
 #   where beta_qh is present bias and delta_qh is the long-run discount factor.
-# alpha_plus and alpha_minus are CARA absolute risk-aversion coefficients.
+# alpha_plus and alpha_minus are CARA absolute risk-aversion coefficients under
+# GlobalUtility="cara", and gain/loss power exponents under GlobalUtility="power".
 # Non-simplex structural params are sampled hierarchically; reference-point
 # weights are continuous cluster-specific a_weights on the 4-simplex.
+_DefaultAlphaBounds = (0.05, 1.0) if GlobalUtility == "power" else (1e-5, 0.01)
+_GlobalAlphaBoundsOverride = _env_float_pair("EB_GLOBAL_ALPHA_BOUNDS", None)
+GlobalAlphaPlusBounds = _env_float_pair(
+    "EB_GLOBAL_ALPHA_PLUS_BOUNDS",
+    _GlobalAlphaBoundsOverride
+    if _GlobalAlphaBoundsOverride is not None
+    else _DefaultAlphaBounds,
+)
+GlobalAlphaMinusBounds = _env_float_pair(
+    "EB_GLOBAL_ALPHA_MINUS_BOUNDS",
+    _GlobalAlphaBoundsOverride
+    if _GlobalAlphaBoundsOverride is not None
+    else _DefaultAlphaBounds,
+)
 _GlobalDeltaBoundsOverride = _env_float_pair("EB_GLOBAL_DELTA_BOUNDS", None)
 GlobalTKDeltaBounds = _env_float_pair(
     "EB_GLOBAL_TK_DELTA_BOUNDS",
@@ -107,11 +200,11 @@ GlobalPrelecDeltaBounds = _env_float_pair(
     _GlobalDeltaBoundsOverride if _GlobalDeltaBoundsOverride is not None else (0.0, 1),
 )
 GlobalTKBounds = [
-    (1e-6, 0.01), (1e-5, 0.01), (1e-5, 0.01), (0.5, 5.0), (0.2, 1.0),
+    (1e-6, 0.01), GlobalAlphaPlusBounds, GlobalAlphaMinusBounds, (0.5, 5.0), (0.2, 1.0),
     (0, 1), (0.0, 1), (0.0, 1), GlobalTKDeltaBounds,
 ]
 GlobalPrelecBounds = [
-    (1e-6, 0.1), (1e-5, 0.01), (1e-5, 0.01), (0.5, 3.0), (1.0, 1.0), (0.4, 1),
+    (1e-6, 0.1), GlobalAlphaPlusBounds, GlobalAlphaMinusBounds, (0.5, 3.0), (1.0, 1.0), (0.4, 1),
     (0, 1), (0.0, 1), (0.0, 1), GlobalPrelecDeltaBounds,
 ]
 GlobalQuasiHyperbolicBounds = [
@@ -122,13 +215,15 @@ GlobalKsiBounds = (1e-4, 1.5)
 
 # ── Model settings ─────────────────────────────────────────────────────────────
 GlobalMethod   = _env_str("EB_GLOBAL_METHOD", "tk")
-GlobalDiscounting = _env_str("EB_GLOBAL_DISCOUNTING", "hyperbolic")
-GlobalCluster  = _env_int("EB_GLOBAL_CLUSTER", 2)      # number of latent preference clusters (C)
+GlobalDiscounting = _env_str("EB_GLOBAL_DISCOUNTING", "quasi_hyperbolic")
+GlobalCluster  = _env_int("EB_GLOBAL_CLUSTER", 1)      # number of latent preference clusters (C)
 
 # Reference point components (Baillon, Bleichrodt & Spinu, 2015)
 # Continuous cluster-specific weights a_weights[k] live on these 4 components:
 # SQ = status quo, PA = partial adaptation, LE = lagged expectation, FE = forward expectation.
 GlobalK        = 4      # kept for compatibility; continuous RP weights require 4 components
+GlobalReferencePointNames = ("SQ", "PA", "LE", "FE")
+GlobalFixedReferencePointName, GlobalFixedReferenceWeights = _reference_point_setting()
 
 GlobalTol      = 1e-4
 GlobalInterMax = 1000
@@ -172,13 +267,20 @@ GlobalPriorCARAEta0 = _env_float("EB_GLOBAL_PRIOR_CARA_ETA0", 1e-3)
 if GlobalPriorCARAEta0 <= 0:
     raise ValueError("EB_GLOBAL_PRIOR_CARA_ETA0 must be positive.")
 GlobalPriorCARAMu0 = float(np.log(GlobalPriorCARAEta0))
-GlobalPriorMu0 = [None, GlobalPriorCARAMu0, GlobalPriorCARAMu0, 0.0, 0.0, 0.0]
+GlobalPriorPowerAlpha0 = _env_float("EB_GLOBAL_PRIOR_POWER_ALPHA0", 0.88)
+if GlobalPriorPowerAlpha0 <= 0:
+    raise ValueError("EB_GLOBAL_PRIOR_POWER_ALPHA0 must be positive.")
+GlobalPriorPowerAlphaMu0 = float(np.log(GlobalPriorPowerAlpha0))
+GlobalPriorAlphaMu0 = (
+    GlobalPriorPowerAlphaMu0 if GlobalUtility == "power" else GlobalPriorCARAMu0
+)
+GlobalPriorMu0 = [None, GlobalPriorAlphaMu0, GlobalPriorAlphaMu0, 0.0, 0.0, 0.0]
 GlobalPriorMu0ByName = {
     "r": None,
     "beta_qh": 0.0,
     "delta_qh": 0.0,
-    "alpha_plus": GlobalPriorCARAMu0,
-    "alpha_minus": GlobalPriorCARAMu0,
+    "alpha_plus": GlobalPriorAlphaMu0,
+    "alpha_minus": GlobalPriorAlphaMu0,
     "lamb": 0.0,
     "gamma": 0.0,
     "palpha": 0.0,

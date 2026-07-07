@@ -18,6 +18,8 @@ POLL_SECONDS = 5
 # them. "cores" is the number of PyMC SMC workers to allocate for this run.
 DEFAULTS = {
     "method": "tk",
+    # Utility function: "cara" (current baseline) or "power".
+    "utility": "cara",
     "discounting": "hyperbolic",
     "lottery_set": "full",
     "clusters": 1,
@@ -117,5 +119,31 @@ RUNS = [
     "delta_bounds": (1e-6, 1.0),
     },
 
+    {
+    "method": "tk",
+    "discounting": "quasi_hyperbolic",
+    "clusters": 3,
+    "lottery_set": "full",
+    "draws": 5000,
+    "chains": 5,
+    "cores": 5,
+    "seed": 42,
+    "ksi_mode": "marginalized",
+    "progressbar": False,
+    "delta_bounds": (1e-6, 1.0),
+    },
+        {
+    "method": "tk",
+    "discounting": "quasi_hyperbolic",
+    "clusters": 3,
+    "lottery_set": "full",
+    "draws": 5000,
+    "chains": 5,
+    "cores": 5,
+    "seed": 42,
+    "ksi_mode": "marginalized",
+    "progressbar": False,
+    "delta_bounds": (1e-6, 1.0),
+    },
 
 ]

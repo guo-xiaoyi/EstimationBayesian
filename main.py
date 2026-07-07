@@ -10,6 +10,7 @@ Usage:
 import argparse
 import os
 import numpy as np
+import pandas as pd
 
 from GlobalSettings import (
     GlobalCluster,
@@ -24,6 +25,9 @@ from GlobalSettings import (
     GlobalPlotsDir,
     GlobalKsiMode,
     GlobalLotterySetName,
+    GlobalFixedReferencePointName,
+    GlobalFixedReferenceWeights,
+    GlobalUtility,
 )
 from preprocessing import load_and_preprocess
 from likelihood import get_free_bounds, setup_likelihood
@@ -57,6 +61,122 @@ def _finite_sample_stat_values(data_array):
     return list(_iter_numeric(values))
 
 
+def _log_marginal_likelihood_values(idata):
+    if not hasattr(idata, "sample_stats"):
+        return np.array([], dtype=float)
+    if "log_marginal_likelihood" not in idata.sample_stats:
+        return np.array([], dtype=float)
+    values = _finite_sample_stat_values(idata.sample_stats["log_marginal_likelihood"])
+    return np.asarray(values, dtype=float)
+
+
+def _model_fit_summary(
+    idata,
+    n_subjects,
+    n_observations,
+    conv_df=None,
+    diagnostic_flag=None,
+):
+    rows = [
+        {
+            "metric": "utility",
+            "value": GlobalUtility,
+            "higher_is_better": "",
+            "description": "Utility function used for this fit.",
+        },
+        {
+            "metric": "n_subjects",
+            "value": int(n_subjects),
+            "higher_is_better": "",
+            "description": "Number of subjects used in this fit.",
+        },
+        {
+            "metric": "n_observations",
+            "value": int(n_observations),
+            "higher_is_better": "",
+            "description": "Number of choice observations used in this fit.",
+        },
+    ]
+
+    log_ml_values = _log_marginal_likelihood_values(idata)
+    finite_log_ml = log_ml_values[np.isfinite(log_ml_values)]
+    log_ml = float("nan")
+    if finite_log_ml.size:
+        log_ml = float(finite_log_ml.mean())
+        rows.extend([
+            {
+                "metric": "log_marginal_likelihood",
+                "value": log_ml,
+                "higher_is_better": True,
+                "description": "SMC estimate of log p(data | model); higher is better for the same data.",
+            },
+            {
+                "metric": "log_marginal_likelihood_per_observation",
+                "value": log_ml / n_observations if n_observations else float("nan"),
+                "higher_is_better": True,
+                "description": "Log marginal likelihood divided by the number of observations.",
+            },
+            {
+                "metric": "log_marginal_likelihood_sd",
+                "value": float(finite_log_ml.std(ddof=1)) if finite_log_ml.size > 1 else 0.0,
+                "higher_is_better": False,
+                "description": "Across-chain/stage variability in the available SMC log marginal likelihood estimates.",
+            },
+            {
+                "metric": "log_marginal_likelihood_min",
+                "value": float(finite_log_ml.min()),
+                "higher_is_better": True,
+                "description": "Minimum finite SMC log marginal likelihood estimate.",
+            },
+            {
+                "metric": "log_marginal_likelihood_max",
+                "value": float(finite_log_ml.max()),
+                "higher_is_better": True,
+                "description": "Maximum finite SMC log marginal likelihood estimate.",
+            },
+            {
+                "metric": "log_marginal_likelihood_n",
+                "value": int(finite_log_ml.size),
+                "higher_is_better": "",
+                "description": "Number of finite SMC log marginal likelihood values found.",
+            },
+        ])
+    else:
+        rows.append({
+            "metric": "log_marginal_likelihood",
+            "value": float("nan"),
+            "higher_is_better": True,
+            "description": "Missing SMC log p(data | model); re-run sampling if model comparison is needed.",
+        })
+
+    if conv_df is not None:
+        finite_rhat = conv_df["r_hat"].dropna()
+        finite_ess = conv_df["ess_per_chain"].dropna()
+        rows.extend([
+            {
+                "metric": "max_r_hat",
+                "value": float(finite_rhat.max()) if not finite_rhat.empty else float("nan"),
+                "higher_is_better": False,
+                "description": "Largest finite R-hat diagnostic across reported parameters.",
+            },
+            {
+                "metric": "min_ess_per_chain",
+                "value": float(finite_ess.min()) if not finite_ess.empty else float("nan"),
+                "higher_is_better": True,
+                "description": "Smallest effective sample size per SMC chain across reported parameters.",
+            },
+        ])
+        if diagnostic_flag is not None:
+            rows.append({
+                "metric": "diagnostic_flag",
+                "value": diagnostic_flag,
+                "higher_is_better": "",
+                "description": "Simple R-hat/ESS diagnostic label printed by main.py.",
+            })
+
+    return pd.DataFrame(rows), log_ml
+
+
 def _resolve_output_paths(output_dir=None):
     if output_dir is None:
         return GlobalTracePath, GlobalSummaryCSV, GlobalPlotsDir
@@ -65,6 +185,15 @@ def _resolve_output_paths(output_dir=None):
         os.path.join(output_dir, "summary.csv"),
         os.path.join(output_dir, "plots"),
     )
+
+
+def _annotate_model_metadata(idata, C):
+    idata.attrs["utility"] = GlobalUtility
+    idata.attrs["method"] = GlobalMethod
+    idata.attrs["discounting"] = GlobalDiscounting
+    idata.attrs["clusters"] = int(C)
+    idata.attrs["ksi_mode"] = GlobalKsiMode
+    return idata
 
 
 def _validate_trace_matches_data(idata, n_subjects):
@@ -83,6 +212,26 @@ def _validate_trace_matches_data(idata, n_subjects):
         if required_var not in idata.posterior:
             raise ValueError(
                 f"Saved trace is missing {required_var!r}. "
+                "Re-run sampling without --load."
+            )
+    trace_utility = str(idata.attrs.get("utility", "cara")).strip().lower()
+    if trace_utility != GlobalUtility:
+        raise ValueError(
+            f"Saved trace utility={trace_utility!r}, but current "
+            f"EB_GLOBAL_UTILITY={GlobalUtility!r}. Re-run sampling without --load."
+        )
+    if GlobalFixedReferenceWeights is not None:
+        a_draws = idata.posterior["a_weights"].values
+        expected = np.asarray(GlobalFixedReferenceWeights, dtype=float)
+        if a_draws.shape[-1] != 4 or not np.allclose(
+            a_draws,
+            expected.reshape((1,) * (a_draws.ndim - 1) + (4,)),
+            rtol=1e-8,
+            atol=1e-8,
+        ):
+            raise ValueError(
+                "Saved trace reference-point weights do not match "
+                f"EB_GLOBAL_FIXED_REFERENCE_POINT={GlobalFixedReferencePointName!r}. "
                 "Re-run sampling without --load."
             )
     bounds_rest = get_free_bounds(GlobalMethod)
@@ -179,13 +328,20 @@ def main(
     setup_likelihood(preproc, lotteries, subjects, GlobalMethod, C)
 
     # --- Sampling or loading ---
-    if load and os.path.exists(trace_path):
+    loaded_existing_trace = load and os.path.exists(trace_path)
+    if loaded_existing_trace:
         print(f"Loading trace from {trace_path} ...")
         idata = load_trace(trace_path)
     else:
+        ref_label = (
+            f"fixed reference={GlobalFixedReferencePointName}"
+            if GlobalFixedReferenceWeights is not None
+            else "estimated reference weights"
+        )
         print(
             f"Building model (C={C} clusters, method={GlobalMethod}, "
-            f"discounting={GlobalDiscounting}, ksi={GlobalKsiMode}) ..."
+            f"utility={GlobalUtility}, discounting={GlobalDiscounting}, ksi={GlobalKsiMode}, "
+            f"{ref_label}) ..."
         )
         model = build_model(subjects, GlobalMethod, C)
 
@@ -202,6 +358,7 @@ def main(
             cores=smc_cores,
             progressbar=progressbar,
         )
+        idata = _annotate_model_metadata(idata, C)
 
     # Catch mismatches between a saved trace and the current data/parameterisation.
     _validate_trace_matches_data(idata, len(subjects))
@@ -212,7 +369,7 @@ def main(
     idata = fix_label_switching(idata, GlobalMethod, C)
 
     # Only write the trace after a fresh sampling run, not when reloading.
-    if not (load and os.path.exists(trace_path)):
+    if not loaded_existing_trace:
         save_trace(idata, trace_path)
 
     # --- Posterior summaries ---
@@ -254,16 +411,22 @@ def main(
     print(f"  max finite R-hat = {max_rhat:.4f}; min ESS/chain = {min_ess:.1f} ({flag})")
     print(conv_df.to_string(index=False))
 
-    # Log marginal likelihood is the SMC estimator of log p(data | model),
-    # useful for Bayes-factor model comparison across different C or methods.
-    try:
-        log_ml_values = _finite_sample_stat_values(
-            idata.sample_stats["log_marginal_likelihood"]
-        )
-        log_ml = float(np.mean(log_ml_values))
+    # Model fitness summary. Log marginal likelihood is the SMC estimator of
+    # log p(data | model), useful for Bayes-factor comparisons across models.
+    fit_df, log_ml = _model_fit_summary(
+        idata,
+        n_subjects=len(subjects),
+        n_observations=preproc[0].shape[0],
+        conv_df=conv_df,
+        diagnostic_flag=flag,
+    )
+    fit_path = summary_csv.replace(".csv", "_model_fit.csv")
+    fit_df.to_csv(fit_path, index=False)
+    print(f"\nModel fit summary saved -> {fit_path}")
+    if np.isfinite(log_ml):
         print(f"\nLog marginal likelihood: {log_ml:.2f}")
-    except Exception:
-        pass
+    else:
+        print("\nLog marginal likelihood: unavailable")
 
     return idata, cluster_df, ref_df, resp
 
