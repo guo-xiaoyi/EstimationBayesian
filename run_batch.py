@@ -230,18 +230,20 @@ def _write_json(path, payload):
 
 def _is_completed(job):
     output_dir = Path(job["_output_dir"])
+    has_expected_outputs = (
+        (output_dir / "summary.csv").exists()
+        and (output_dir / "summary_reference_weights.csv").exists()
+        and (output_dir / "summary_model_fit.csv").exists()
+        and (output_dir / "summary_diagnostics.csv").exists()
+    )
     status_path = output_dir / "status.json"
     if status_path.exists():
         try:
             status = json.loads(status_path.read_text())
-            return status.get("status") == "completed"
+            return status.get("status") == "completed" and has_expected_outputs
         except json.JSONDecodeError:
             pass
-    return (
-        (output_dir / "trace.nc").exists()
-        and (output_dir / "summary.csv").exists()
-        and (output_dir / "summary_reference_weights.csv").exists()
-    )
+    return has_expected_outputs
 
 
 def _job_env(job):

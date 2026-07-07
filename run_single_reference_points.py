@@ -14,6 +14,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -97,19 +98,21 @@ def _finite_sample_stat_values(data_array):
 
 
 def _is_completed(output_dir):
+    has_expected_outputs = (
+        (output_dir / "summary.csv").exists()
+        and (output_dir / "summary_reference_weights.csv").exists()
+        and (output_dir / "summary_model_fit.csv").exists()
+        and (output_dir / "summary_diagnostics.csv").exists()
+    )
     status_path = output_dir / "status.json"
     if status_path.exists():
         try:
             status = json.loads(status_path.read_text())
-            if status.get("status") == "completed":
+            if status.get("status") == "completed" and has_expected_outputs:
                 return True
         except json.JSONDecodeError:
             pass
-    return (
-        (output_dir / "trace.nc").exists()
-        and (output_dir / "summary.csv").exists()
-        and (output_dir / "summary_reference_weights.csv").exists()
-    )
+    return has_expected_outputs
 
 
 def _job_env(args, reference_point, output_dir):
@@ -141,6 +144,42 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def _load_batch_defaults(path="BatchSettings.py"):
+    settings_path = Path(path)
+    if not settings_path.is_absolute():
+        settings_path = ROOT / settings_path
+    spec = importlib.util.spec_from_file_location("single_reference_batch_settings", settings_path)
+    if spec is None or spec.loader is None:
+        return {}
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(getattr(module, "DEFAULTS", {}))
+
+
+def _apply_batch_defaults(args, defaults):
+    option_map = {
+        "method": "method",
+        "utility": "utility",
+        "discounting": "discounting",
+        "clusters": "clusters",
+        "draws": "draws",
+        "chains": "chains",
+        "cores": "cores",
+        "seed": "seed",
+        "ksi_mode": "ksi_mode",
+        "delta_bounds": "delta_bounds",
+        "data": "data",
+        "lottery_set": "lottery_set",
+        "lottery_ids": "lottery_ids",
+    }
+    for attr, key in option_map.items():
+        if getattr(args, attr, None) in (None, "") and key in defaults:
+            setattr(args, attr, defaults[key])
+    if not args.progress and defaults.get("progressbar") is True:
+        args.progress = True
+    return args
+
+
 def _run_one(args, reference_point, description, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "_matplotlib").mkdir(exist_ok=True)
@@ -153,6 +192,7 @@ def _run_one(args, reference_point, description, output_dir):
     settings_payload = {
         "reference_point": reference_point,
         "description": description,
+        "defaults_source": "BatchSettings.DEFAULTS",
         "output_dir": str(output_dir),
         "draws": args.draws,
         "chains": args.chains,
@@ -219,23 +259,36 @@ def _run_one(args, reference_point, description, output_dir):
 
 
 def _read_log_marginal_likelihood(output_dir):
+    fit_path = output_dir / "summary_model_fit.csv"
+    if fit_path.exists():
+        try:
+            fit_df = pd.read_csv(fit_path)
+            row = fit_df[fit_df["metric"] == "log_marginal_likelihood"]
+            if not row.empty:
+                value = pd.to_numeric(row.iloc[0]["value"], errors="coerce")
+                if pd.notna(value):
+                    return float(value), "summary_model_fit"
+        except Exception as exc:
+            print(f"[warn] Could not read log marginal likelihood from {fit_path}: {exc}")
+
     trace_path = output_dir / "trace.nc"
     if not trace_path.exists():
-        return np.nan, "missing"
-    try:
-        import arviz as az
+        values = []
+    else:
+        try:
+            import arviz as az
 
-        idata = az.from_netcdf(trace_path)
-        if not hasattr(idata, "sample_stats"):
-            values = []
-        elif "log_marginal_likelihood" not in idata.sample_stats:
-            values = []
-        else:
-            values = _finite_sample_stat_values(idata.sample_stats["log_marginal_likelihood"])
-        if values:
-            return float(np.mean(values)), "trace"
-    except Exception as exc:
-        print(f"[warn] Could not read log marginal likelihood from {trace_path}: {exc}")
+            idata = az.from_netcdf(trace_path)
+            if not hasattr(idata, "sample_stats"):
+                values = []
+            elif "log_marginal_likelihood" not in idata.sample_stats:
+                values = []
+            else:
+                values = _finite_sample_stat_values(idata.sample_stats["log_marginal_likelihood"])
+            if values:
+                return float(np.mean(values)), "trace"
+        except Exception as exc:
+            print(f"[warn] Could not read log marginal likelihood from {trace_path}: {exc}")
 
     log_path = output_dir / "run.log"
     if log_path.exists():
@@ -249,23 +302,36 @@ def _read_log_marginal_likelihood(output_dir):
 
 
 def _read_status(output_dir):
+    completed_by_outputs = (
+        (output_dir / "summary.csv").exists()
+        and (output_dir / "summary_reference_weights.csv").exists()
+        and (output_dir / "summary_model_fit.csv").exists()
+        and (output_dir / "summary_diagnostics.csv").exists()
+    )
     status_path = output_dir / "status.json"
     if not status_path.exists():
-        return "missing"
+        return "completed" if completed_by_outputs else "missing"
     try:
-        return json.loads(status_path.read_text()).get("status", "unknown")
+        status = json.loads(status_path.read_text()).get("status", "unknown")
+        if status == "completed" and not completed_by_outputs:
+            return "incomplete"
+        if status != "completed" and completed_by_outputs:
+            return "completed"
+        return status
     except json.JSONDecodeError:
-        return "unknown"
+        return "completed" if completed_by_outputs else "unknown"
 
 
 def _collect_results(output_root, jobs):
     rows = []
     cluster_frames = []
     reference_frames = []
+    fit_frames = []
 
     for reference_point, description, output_dir in jobs:
         summary_path = output_dir / "summary.csv"
         ref_path = output_dir / "summary_reference_weights.csv"
+        fit_path = output_dir / "summary_model_fit.csv"
         log_ml, log_ml_source = _read_log_marginal_likelihood(output_dir)
 
         rows.append(
@@ -288,6 +354,11 @@ def _collect_results(output_root, jobs):
             ref_df = pd.read_csv(ref_path)
             ref_df.insert(0, "reference_point", reference_point)
             reference_frames.append(ref_df)
+
+        if fit_path.exists():
+            fit_df = pd.read_csv(fit_path)
+            fit_df.insert(0, "reference_point", reference_point)
+            fit_frames.append(fit_df)
 
     comparison = pd.DataFrame(rows)
     finite = comparison["log_marginal_likelihood"].replace([np.inf, -np.inf], np.nan).notna()
@@ -321,6 +392,10 @@ def _collect_results(output_root, jobs):
     if reference_frames:
         reference_path = output_root / "single_reference_fixed_weights.csv"
         pd.concat(reference_frames, ignore_index=True).to_csv(reference_path, index=False)
+
+    if fit_frames:
+        fit_path = output_root / "single_reference_model_fit.csv"
+        pd.concat(fit_frames, ignore_index=True).to_csv(fit_path, index=False)
 
     return comparison, comparison_path
 
@@ -374,6 +449,8 @@ def main():
     parser.add_argument("--compare-only", action="store_true", help="skip estimation and rebuild comparison files")
     parser.add_argument("--progress", action="store_true", help="enable PyMC progress bars in run logs")
     args = parser.parse_args()
+    batch_defaults = _load_batch_defaults()
+    args = _apply_batch_defaults(args, batch_defaults)
 
     output_root = Path(args.output_root)
     if not output_root.is_absolute():

@@ -31,7 +31,7 @@ from GlobalSettings import (
 )
 from preprocessing import load_and_preprocess
 from likelihood import get_free_bounds, setup_likelihood
-from bayesian_mixture import build_model, run_sampling, save_trace, load_trace
+from bayesian_mixture import build_model, run_sampling, load_trace
 from analysis import (
     fix_label_switching,
     extract_cluster_params,
@@ -368,10 +368,6 @@ def main(
     print("Fixing label switching ...")
     idata = fix_label_switching(idata, GlobalMethod, C)
 
-    # Only write the trace after a fresh sampling run, not when reloading.
-    if not loaded_existing_trace:
-        save_trace(idata, trace_path)
-
     # --- Posterior summaries ---
     print("Extracting cluster parameters ...")
     cluster_df = extract_cluster_params(idata, GlobalMethod, C)
@@ -410,6 +406,9 @@ def main(
     flag = "OK" if max_rhat < 1.05 and min_ess >= 100 else "WARNING: poor agreement / low particle ESS"
     print(f"  max finite R-hat = {max_rhat:.4f}; min ESS/chain = {min_ess:.1f} ({flag})")
     print(conv_df.to_string(index=False))
+    diagnostics_path = summary_csv.replace(".csv", "_diagnostics.csv")
+    conv_df.to_csv(diagnostics_path, index=False)
+    print(f"Diagnostics saved -> {diagnostics_path}")
 
     # Model fitness summary. Log marginal likelihood is the SMC estimator of
     # log p(data | model), useful for Bayes-factor comparisons across models.

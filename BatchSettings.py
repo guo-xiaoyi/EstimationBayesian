@@ -19,51 +19,25 @@ POLL_SECONDS = 5
 DEFAULTS = {
     "method": "tk",
     # Utility function: "cara" (current baseline) or "power".
-    "utility": "cara",
-    "discounting": "hyperbolic",
+    "utility": "power",
+    "discounting": "quasi_hyperbolic",
     "lottery_set": "full",
     "clusters": 1,
     "draws": 5000,
-    "chains": 5,
-    "cores": 5,
+    "chains": 7,
+    "cores": 7,
     "seed": 42,
     "ksi_mode": "marginalized",
     # Structural reference-point delta. Equal endpoints fix it; an interval estimates it.
-    "delta_bounds": (1e-6, 1.0),
+    "delta_bounds": (1.0,1.0),
     "progressbar": False,
 }
 
 RUNS = [
-    {    
-    "method": "tk",
-    "clusters": 1,
-    "lottery_set": "full",
-    "draws": 5000,
-    "chains": 5,
-    "cores": 5,
-    "seed": 42,
-    "ksi_mode": "marginalized",
-    "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
-
-    {    
-    "method": "tk",
-    "clusters": 2,
-    "lottery_set": "full",
-    "draws": 5000,
-    "chains": 5,
-    "cores": 5,
-    "seed": 42,
-    "ksi_mode": "marginalized",
-    "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
-
-
 
     {
     "method": "tk",
+    "utility": "power",
     "discounting": "quasi_hyperbolic",
     "clusters": 1,
     "lottery_set": "full",
@@ -73,11 +47,11 @@ RUNS = [
     "seed": 42,
     "ksi_mode": "marginalized",
     "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
+    "delta_bounds": (1.0,1.0),    },
 
     {
     "method": "tk",
+    "utility": "power",
     "discounting": "quasi_hyperbolic",
     "clusters": 2,
     "lottery_set": "full",
@@ -87,40 +61,11 @@ RUNS = [
     "seed": 42,
     "ksi_mode": "marginalized",
     "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
-
+    "delta_bounds": (1.0,1.0),    },
 
     {
     "method": "tk",
-    "discounting": "exponential",
-    "clusters": 1,
-    "lottery_set": "full",
-    "draws": 5000,
-    "chains": 5,
-    "cores": 5,
-    "seed": 42,
-    "ksi_mode": "marginalized",
-    "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
-
-    {
-    "method": "tk",
-    "discounting": "exponential",
-    "clusters": 2,
-    "lottery_set": "full",
-    "draws": 5000,
-    "chains": 5,
-    "cores": 5,
-    "seed": 42,
-    "ksi_mode": "marginalized",
-    "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
-
-    {
-    "method": "tk",
+    "utility": "power",
     "discounting": "quasi_hyperbolic",
     "clusters": 3,
     "lottery_set": "full",
@@ -130,10 +75,40 @@ RUNS = [
     "seed": 42,
     "ksi_mode": "marginalized",
     "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
+    "delta_bounds": (1.0,1.0),
     },
-        {
-    "method": "tk",
+
+
+        {    
+    "method": "prelec",
+    "clusters": 1,
+    "utility": "power",
+    "lottery_set": "full",
+    "draws": 5000,
+    "chains": 7,
+    "cores": 7,
+    "seed": 42,
+    "ksi_mode": "marginalized",
+    "progressbar": False,
+    "delta_bounds": (1.0,1.0),    },
+
+    {    
+    "method": "prelec",
+    "clusters": 2,
+    "utility": "power",
+    "lottery_set": "full",
+    "draws": 5000,
+    "chains": 5,
+    "cores": 5,
+    "seed": 42,
+    "ksi_mode": "marginalized",
+    "progressbar": False,
+    "delta_bounds": (1.0,1.0),    },
+
+
+    {
+    "method": "prelec",
+    "utility": "power",
     "discounting": "quasi_hyperbolic",
     "clusters": 3,
     "lottery_set": "full",
@@ -143,7 +118,7 @@ RUNS = [
     "seed": 42,
     "ksi_mode": "marginalized",
     "progressbar": False,
-    "delta_bounds": (1e-6, 1.0),
-    },
+    "delta_bounds": (1.0,1.0),    },
+
 
 ]
